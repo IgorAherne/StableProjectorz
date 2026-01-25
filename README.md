@@ -30,6 +30,14 @@ Our Discord server: [here](https://discord.gg/aWbnX2qan2)
 
 ---
 
+Watch the video about the codebase (as of Jan 2026) for a quick-start:
+
+<div align="center">
+  <a href="https://www.youtube.com/watch?v=uzz3KtbvIEk">
+    <img src="Assets/_gm/Art/Previews/codebase-video-thumb.jpg" alt="Watch the Video" />
+  </a>
+</div>
+
 ## 📂 1. Architecture & Patterns
 *   **Scene Management:** We use **Additive Loading**. `Start_Scene_Global` scene loads UI and manager-scenes separately to prevent merge conflicts.
 *   **Update Loop:** `Update_callbacks_MGR` dispatches events (Navigation, Depth, Rendering) in a strict order. Using `Update()` for other things.
