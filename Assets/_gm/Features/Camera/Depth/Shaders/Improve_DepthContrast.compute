@@ -1,0 +1,135 @@
+// Adjusts the contrast of depth image, making it more promiment.
+// Uses maximum and mimum value that we found in the texture, and normalizes against it.
+#pragma kernel CSMain_4x4_float1;
+#pragma kernel CSMain_4x4_float1_strict
+
+#define THREADS_X 32
+#define THREADS_Y 1
+#define THREAD_ZONE_SIDE 4
+
+RWTexture2D<float> _OutputTexture_f1;
+uint _Output_Width;
+uint _Output_Height;
+
+float _Contrast01;
+float _Brightness01;
+StructuredBuffer<float> _Depth_MinMax;
+
+// High quality noise function
+float noise2D(float2 p)
+{
+    float3 p3 = frac(float3(p.xyx) * float3(.1031, .1030, .0973));
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+
+//effect_strength: 0.01 medium, 0.02 strong noise
+float subtleNoise(uint2 pixel, float brightness, float effect_strength)
+{
+    float2 normalizedCoord = float2(pixel) / 1024.0;
+    float noise = noise2D(normalizedCoord * 1024.0);
+    
+    // Scale intensity with resolution. More res = stronger noise
+    float resolutionScale = sqrt(float(_Output_Width) / 1024.0);
+    float noiseAmount = (effect_strength * resolutionScale) / sqrt(max(brightness, 0.1));
+    
+    noise = noise * 2.0 - 1.0;
+    return noise * noiseAmount;
+}
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain_4x4_float1(uint3 dtid : SV_DispatchThreadID) {
+    uint2 gid = dtid.xy*THREAD_ZONE_SIDE; // Each thread now starts at a 4x4 block base
+    if(gid.x >= _Output_Width){ return;}
+    if(gid.y >= _Output_Height){ return;}
+
+    float depthMin = _Depth_MinMax[0];
+    float depthMax = _Depth_MinMax[1];
+    //pretend minimum is slightly further than actual minimum.
+    //Ensures none of the portions of model are ever fully black after the contrast:
+    depthMin = max(0, depthMin-0.03f);
+    depthMax = depthMax+0.05f; //prevents white blob on the forehead.
+
+    //small variation in depth will result in banding if we try to stretch it.
+    //Also, flat surfaces that are parallel-to-camera, shouldn't be subject to contrast.
+    //if(depthMax-depthMin < 0.16){return;}//Therefore return if min too close to max.
+    float maxMinusMin_inv = 1.0/max(0.00001, depthMax-depthMin);
+
+    // Reduce noise for larger depth ranges.
+    // * 100 the higher the number the tinier the region where noise is applied.
+    float rangeBasedNoiseReduction = saturate((depthMax-depthMin) * 100.0);
+
+    uint2 currentID;
+    for(uint dy=0; dy<THREAD_ZONE_SIDE; ++dy){
+        for(uint dx=0; dx<THREAD_ZONE_SIDE; ++dx){
+            currentID = uint2(gid.x+dx, gid.y+dy);
+            if(currentID.x>=_Output_Width){ continue; }
+            if(currentID.y>=_Output_Height){ continue; }
+            
+            // Normalize the depth value relative to the minimum and maximum depth we found.
+            // Ignore if furthest (empty) depth (keep as is, 0). We want black depth background for controlnet:
+            float d = _OutputTexture_f1[currentID];
+            float isNotZero = d>0? 1:0;
+            
+            float depth = (d-depthMin) * maxMinusMin_inv * isNotZero;
+            depth = lerp(d, depth, _Contrast01);
+            
+            float noiseValue = subtleNoise(currentID, 1.0, 0.011);
+            noiseValue *= (1.0 - rangeBasedNoiseReduction*0.8);
+            
+            float finalDepth = depth + (noiseValue * isNotZero);
+            finalDepth = max(0.0, finalDepth);
+            
+            _OutputTexture_f1[currentID] = finalDepth;
+        }
+    }
+}
+
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain_4x4_float1_strict(uint3 dtid : SV_DispatchThreadID)
+{
+    uint2 gid = dtid.xy * THREAD_ZONE_SIDE;
+    if (gid.x >= _Output_Width || gid.y >= _Output_Height)
+        return;
+    
+    float depthMin = _Depth_MinMax[0];
+    float depthMax = _Depth_MinMax[1];
+    
+    float depthRange = depthMax - depthMin;
+    float maxMinusMin_inv = 1.0 / max(0.000001, depthRange);
+    
+    // Reduce noise for larger depth ranges.
+    // * 100 the higher the number the tinier the region where noise is applied.
+    float rangeBasedNoiseReduction = saturate(depthRange * 100.0);
+    
+    uint2 currentID;
+    for (uint dy = 0; dy < THREAD_ZONE_SIDE; ++dy)
+    {
+        for (uint dx = 0; dx < THREAD_ZONE_SIDE; ++dx)
+        {
+            currentID = uint2(gid.x + dx, gid.y + dy);
+            if (currentID.x >= _Output_Width || currentID.y >= _Output_Height)
+                continue;
+            
+            float d = _OutputTexture_f1[currentID];
+            float isNotZero = d > 0 ? 1 : 0;
+            
+            float depth = (d - depthMin) * maxMinusMin_inv * isNotZero;
+            depth = lerp(d, depth, _Contrast01);
+            depth *= _Brightness01;
+            
+            // Much more subtle noise application
+            float noiseValue = subtleNoise(currentID, _Brightness01, 0.011);
+            noiseValue *= (1.0 - rangeBasedNoiseReduction*0.8); // Reduce noise almost entirely, when depth range is large
+            
+            float finalDepth = depth + (noiseValue * isNotZero);
+            finalDepth = max(0.0, finalDepth);
+            
+            _OutputTexture_f1[currentID] = finalDepth;
+        }
+    }
+}

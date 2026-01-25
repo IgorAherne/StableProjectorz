@@ -1,0 +1,24 @@
+//Copies portion (sector) of uint4 atlas into a smaller texture.
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+Texture2D<uint4> _From;
+RWTexture2D<uint4> _To;
+
+int _SectorTexelOffsetX;
+int _SectorTexelOffsetY;
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID){
+    uint2 dtid = uint2(id.x, id.y);
+    dtid += _SectorTexelOffsetX;
+    dtid += _SectorTexelOffsetY;
+    //using id in To, and dtid in From. 
+    //That's because id has size of sector, and so does _To.
+    //But dtid is for sampling an entire atlas of sectors, _From is an large texture.
+    _To[id.xy] = _From[dtid.xy];
+}

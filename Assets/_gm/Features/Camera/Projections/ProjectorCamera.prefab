@@ -1,0 +1,152 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &5535681017058973926
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4510533896839505574}
+  - component: {fileID: 3852193306704328775}
+  - component: {fileID: 8019193208514519525}
+  - component: {fileID: 7242216422561266825}
+  - component: {fileID: 7339681033981609849}
+  - component: {fileID: 3421326132261931510}
+  m_Layer: 0
+  m_Name: ProjectorCamera
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4510533896839505574
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5535681017058973926}
+  serializedVersion: 2
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!20 &3852193306704328775
+Camera:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5535681017058973926}
+  m_Enabled: 0
+  serializedVersion: 2
+  m_ClearFlags: 4
+  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_projectionMatrixMode: 1
+  m_GateFitMode: 2
+  m_FOVAxisMode: 0
+  m_Iso: 200
+  m_ShutterSpeed: 0.005
+  m_Aperture: 16
+  m_FocusDistance: 10
+  m_FocalLength: 50
+  m_BladeCount: 5
+  m_Curvature: {x: 2, y: 11}
+  m_BarrelClipping: 0.25
+  m_Anamorphism: 0
+  m_SensorSize: {x: 36, y: 24}
+  m_LensShift: {x: 0, y: 0}
+  m_NormalizedViewPortRect:
+    serializedVersion: 2
+    x: 0
+    y: 0
+    width: 1
+    height: 1
+  near clip plane: 0.25
+  far clip plane: 1000
+  field of view: 29.567822
+  orthographic: 0
+  orthographic size: 5
+  m_Depth: -1
+  m_CullingMask:
+    serializedVersion: 2
+    m_Bits: 8192
+  m_RenderingPath: 1
+  m_TargetTexture: {fileID: 0}
+  m_TargetDisplay: 0
+  m_TargetEye: 3
+  m_HDR: 0
+  m_AllowMSAA: 0
+  m_AllowDynamicResolution: 0
+  m_ForceIntoRT: 0
+  m_OcclusionCulling: 1
+  m_StereoConvergence: 10
+  m_StereoSeparation: 0.022
+--- !u!114 &8019193208514519525
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5535681017058973926}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6c11ebfbe31b95949badf51670611405, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _projectionCamera: {fileID: 3852193306704328775}
+  _init_helper: {fileID: 7242216422561266825}
+--- !u!114 &7242216422561266825
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5535681017058973926}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d415b0ec5f692cf4289ec45921d80c6c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _projectionCamera: {fileID: 8019193208514519525}
+  _cam: {fileID: 3852193306704328775}
+  _depthContrastHelper: {fileID: 7339681033981609849}
+  _depthEdgesDetector: {fileID: 3421326132261931510}
+  _proj_visibility_Shader: {fileID: 4800000, guid: b9d4869d9f2c03944bd72f943095f646, type: 3}
+  _ProjectionsAlignment_shader: {fileID: 4800000, guid: 2cb9e36c1c1a0d64eb26d4fafeefa893, type: 3}
+  _AlignmentToVisibil_shader: {fileID: 7200000, guid: 61128efc79291724f9b847f7994d9c89, type: 3}
+--- !u!114 &7339681033981609849
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5535681017058973926}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 167dd2d1061efd441800bf055aa9d572, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _depth_shader: {fileID: 4800000, guid: 8d1b5970598a5d5438873cad868dbca3, type: 3}
+  _blitDepthLatestCamera_add_shader: {fileID: 4800000, guid: 089aa39600dd85043b807a5737f72da2, type: 3}
+  _minMaxDepth_shader: {fileID: 7200000, guid: 3decf2dab77833947ac65ab613c3a744, type: 3}
+  _depthContrast_shader: {fileID: 7200000, guid: 4167b65abcedcac4f856b87a023033e1, type: 3}
+  _intermediateTextures: []
+--- !u!114 &3421326132261931510
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5535681017058973926}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1550a498d1615e24aa90529b91f02340, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _detectEdges_byDepth: {fileID: 7200000, guid: e07ed975544302445bc48c75b3a4267b, type: 3}

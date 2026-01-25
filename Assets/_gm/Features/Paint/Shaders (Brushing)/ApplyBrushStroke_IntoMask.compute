@@ -1,0 +1,139 @@
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+#define THREADS_Z 1
+
+#pragma multi_compile _ BLEND_RGBA_ONCE
+
+
+#ifdef BLEND_RGBA_ONCE // destination is going to be four-channel RGBA:
+
+  Texture2DArray<float> _CurrBrushStroke_R8;
+  RWTexture2DArray<float4> _PaintedMask;
+
+  // What absolute strength was for used this brush stroke. For example, 10%.  
+  // Helps when combating asymptotic behavior of lerp()
+  float _MaxPossibleBrushStrength01; 
+
+  float _Sign; //-1 for erase, 1 for add
+  float4 _PaintColor;
+
+  Texture2DArray<float> _UV_Chunks_R8; //tells where the uv islands are, and where there is emptyness. Helps in dilation.
+  float4 _UV_Chunks_scale; //by how much '_UV_Chunks_R8' is bigger than the other textures.
+
+
+#else // destination is going to be single-channel R:
+
+  Texture2DArray<float> _PrevBrushStroke_R8;
+  Texture2DArray<float> _CurrBrushStroke_R8;
+  float _Sign; //-1 for erase, 1 for add
+
+  // [0, 0.5] 0% to 100%.   [0.5, 1] 100% to 200%.  0.5> is for dominating 
+  // over the invisibility of the mask (fading of edges etc: FAR & SFT sliders)
+  RWTexture2DArray<float> _PaintedMask;
+  //R: visiblity with fading applied to edges.  G: true visibility of texel by its proj camera.
+  Texture2DArray<float2> _Visibility_R8G8;
+
+  Texture2DArray<float> _UV_Chunks_R8; //tells where the uv islands are, and where there is emptyness. Helps in dilation.
+  float4 _UV_Chunks_scale; //by how much '_UV_Chunks_R8' is bigger than the other textures.
+#endif
+
+
+// Helper function to check if a texel is in an empty region
+bool IsTexelInEmptyRegion(int3 coord){
+    uint3 chunkCoord = coord;
+          chunkCoord.xy *=  _UV_Chunks_scale.xy;
+    return _UV_Chunks_R8[chunkCoord] < 0.5;
+}
+
+
+// Helper function to sample the brush stroke difference at a given coordinate
+float SampleBrushStrokeDifference(int3 coord){
+  #ifdef BLEND_RGBA_ONCE
+    float prevPaint = 0; 
+  #else
+    float prevPaint = _PrevBrushStroke_R8[coord] * _Sign;
+  #endif
+    float currPaint = _CurrBrushStroke_R8[coord] * _Sign;
+    return currPaint - prevPaint;
+}
+
+
+// Dilation, done for a texel that's outside all UV islands, it scans the neighboring texels.
+// Tries to find non-empty brush-stroke difference from nearby texels.
+float FindNearbyVisibleDifference(uint3 id, out int3 neighborId){
+    int dilationRadius =1; //don't use more than 1, because it doesn't make much difference.
+    float diff_m1_p1 = 0;
+
+    #pragma unroll
+    for (int offsetY = -dilationRadius; offsetY <= dilationRadius; offsetY++) {
+        
+        #pragma unroll
+        for (int offsetX = -dilationRadius; offsetX <= dilationRadius; offsetX++) {
+           
+            int3 offsetCoord = id + int3(offsetX, offsetY, 0);
+            float offsetDiff = SampleBrushStrokeDifference(offsetCoord);
+
+            bool notEmpty =  !IsTexelInEmptyRegion(offsetCoord);
+
+            diff_m1_p1 =  notEmpty?  offsetDiff : diff_m1_p1;
+            neighborId =  notEmpty? offsetCoord : neighborId;
+        }
+    }
+    return diff_m1_p1;
+}
+
+
+#include "Assets/_gm/_Core/Shader_Includes/Brush_ApplyFinalStroke_ToMask.cginc"
+
+
+// Update the painted mask based on the difference
+void ApplyDifference(float diff_m1_p1, uint3 fromId, uint3 destId){
+
+    #ifdef BLEND_RGBA_ONCE //only done once, when mouse is released:
+        float4 currMask = _PaintedMask[fromId.xyz];
+        float4 targetColor = _PaintColor;
+        
+        float4 blendedColor = apply_brush_stroke_rgba( currMask, targetColor, diff_m1_p1, _MaxPossibleBrushStrength01 );
+     
+        _PaintedMask[destId] = blendedColor;
+
+    #else //done every frame, while dragging the mouse:
+    
+        float2 visibility     = _Visibility_R8G8[fromId.xyz];
+        float visibilityFaded = visibility.r;
+        float visibilityReal  = visibility.g;
+     
+        float invisibility  =  1.0 - visibilityFaded;
+              invisibility *=  visibilityReal;
+    
+        //the mask is [0,1] and needs to be expanded to [0,2]. 
+        //Anything above 1 is for fighting the invisibility:
+        float currMask =  _PaintedMask[fromId.xyz]*2;
+              currMask += diff_m1_p1;
+              currMask =  clamp(currMask, 0, 1+invisibility);
+    
+        _PaintedMask[destId] = currMask*0.5;
+        // Has to be *0.5, because expected to be [0, 0.5] range. 
+        // Anything above 0.5 would be for "fighting the invisibility of FAR and SFT sliders"
+    #endif
+}
+
+
+[numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
+void CSMain (uint3 id : SV_DispatchThreadID){
+    
+    float diff_m1_p1; //will obtain 'current - previous'.
+
+    if (IsTexelInEmptyRegion(id)){ 
+        int3 neighborId = id;//we are not in any uv chunk, so try to "steal" a difference from a valid neighbor:
+        diff_m1_p1 = FindNearbyVisibleDifference(id, neighborId);
+        ApplyDifference(diff_m1_p1, neighborId, id);//from neighborId, into our own id.
+    }else{
+        //we are inside uv chunk, get difference from own coordinate:
+        diff_m1_p1 = SampleBrushStrokeDifference(id);
+        ApplyDifference(diff_m1_p1, id, id);
+    }
+}

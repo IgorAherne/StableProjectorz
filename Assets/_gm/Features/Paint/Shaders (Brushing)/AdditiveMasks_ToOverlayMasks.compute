@@ -1,0 +1,255 @@
+// The purpose is to tweak Overlay weights of all masks.
+// Unlike Additive weights, Overlay weights are not used during final rendering.
+// Also, each one can be in range [0,1].  Their role is to obscure each other.
+// So in this shader we'll compute Overlay weights, such that Additive weights appear to remain the same.
+//
+// Samples all masks for a given UV.
+// There can be up to 64 or even up to 128 masks. 
+// They are arranged into array, each entry contains several properties of a mask.
+// The array is sorted by first property in the array entries (the Order of a mask)
+// 
+// Then, we iterate over masks, and adjust their Overlay property, 
+// such that Additive property appears the same.
+//
+// Then, we undo the sorting, to restore original array, and save it back to original samples in atlases.
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+//these vals must match the ones in the .cs script which dispatched this compute shader:
+#define ATLAS_NUM_ROWS 2
+#define ATLAS_NUM_COLS 2 //how many sectors horizontaly.
+#define ATLAS_SECTOR_SIZE 1024
+#define MASKS_PER_TEXEL 16
+#define MASKS_PER_ATLAS 64  //in 2048 atlas, 4 sectors of 1024.  Texel has 4 channels, 4 masks per channel. 4*4*4 = 64
+
+//How many masks there will be from all atlases. Up to 2 atlases supported at the moment (128 masks)
+//make sure to set this via SetKeyword in c# script:
+#pragma multi_compile  MASKS_TOTAL_64  MASKS_TOTAL_128
+
+#ifdef MASKS_TOTAL_64
+    #define MASKS_OF_ALL_ATLASES 64
+#else 
+    #define MASKS_OF_ALL_ATLASES 128
+#endif
+
+
+// We only process portions where the texture is painted this very moment. Helps to save performance.
+Texture2D<uint3> _TopMemory_prev; //from previous frame
+Texture2D<uint3> _TopMemory_curr; //from this frame. Same dimensions as mask, not entire atlas
+
+//contains several sectors.
+// Keep in mind, each mask is expressed in 8-bits. 
+// This allows atlas texture to contain sixteen masks in each texel. 
+// (There are 4 channels and every channel is 32 bits)
+Texture2D<uint4> _OrderAtlas_0;
+RWTexture2D<uint4> _OverlayAtlas_0;
+Texture2D<uint4> _AdditiveAtlas_0;
+
+#ifdef MASKS_TOTAL_128
+    Texture2D<uint4> _OrderAtlas_1;
+    RWTexture2D<uint4> _OverlayAtlas_1;
+    Texture2D<uint4> _AdditiveAtlas_1;
+#endif
+
+#include "Assets/_gm/_Core/Shader_Includes/BrushMasks_BitwiseTools.cginc"
+#include "Assets/_gm/_Core/Shader_Includes/AtlasSort.cginc"
+
+
+void ord_over_oix_addit( uint order_channel32,  uint overlay_channel32,  int ix,  uint additive_channel32,
+                         inout uint array[MASKS_OF_ALL_ATLASES] ){
+    // Pack the first uint of the array:
+    array[ix+0] = (((order_channel32 >> 0)  & 0xFF) << 0)  // first 8 bits:  order
+                | (((overlay_channel32 >> 0) & 0xFF) << 8) // second 8 bits: overlay
+                | (((ix+0) & 0xFF) << 16)                  // third 8 bits:  original ix. DON'T shift it.
+                | (((additive_channel32>>0) & 0xFF) << 24);// fourth 8 bits: additive weight
+    // Pack the second uint of the array:
+    array[ix+1] = (((order_channel32 >> 8) & 0xFF) << 0)
+                | (((overlay_channel32 >> 8) & 0xFF) << 8) 
+                | (((ix+1) & 0xFF) << 16) // Correctly place ix+1 WITHOUT bit shifting ix+1.
+                | (((additive_channel32>>8) & 0xFF) << 24);
+
+    array[ix+2] = (((order_channel32 >> 16) & 0xFF) << 0) 
+                | (((overlay_channel32 >> 16) & 0xFF) << 8) 
+                | (((ix+2) & 0xFF) << 16)
+                | (((additive_channel32>>16) & 0xFF) << 24);
+
+    array[ix+3] = (((order_channel32 >> 24) & 0xFF) << 0) 
+                | (((overlay_channel32 >> 24) & 0xFF) << 8) 
+                | (((ix+3) & 0xFF) << 16)
+                | (((additive_channel32>>24) & 0xFF) << 24);
+}
+
+
+void take_next_16_masks( uint2 atlas_coord, 
+                         Texture2D<uint4> orderAtlas,  RWTexture2D<uint4> overlayAtlas,  Texture2D<uint4> additiveAtlas,
+                         int ix, //offset in the array.
+                         // Aray of  packed values.
+                         //  first 8bits:  orderIx,  
+                         //  second 8bits: overlayMask,  
+                         //  third 8bits:  original index (from this entire array)
+                         //  fourth 8bits: additive mask
+                         inout uint ord_ovr_oix_addit[MASKS_OF_ALL_ATLASES] ){
+    
+    uint4 u4_order   =  orderAtlas[ atlas_coord ];//contains 4 packed orderIx values.
+    uint4 u4_overlay =  overlayAtlas[ atlas_coord ];//contains 4 packed overlayMask values.
+    uint4 u4_additive = additiveAtlas[ atlas_coord ];//has 4 packed additiveMask values
+
+    ord_over_oix_addit(u4_order.x,  u4_overlay.x,  ix,    u4_additive.x,  ord_ovr_oix_addit);
+    ord_over_oix_addit(u4_order.y,  u4_overlay.y,  ix+4,  u4_additive.y,  ord_ovr_oix_addit);
+    ord_over_oix_addit(u4_order.z,  u4_overlay.z,  ix+8,  u4_additive.z,  ord_ovr_oix_addit);
+    ord_over_oix_addit(u4_order.w,  u4_overlay.w,  ix+12, u4_additive.w,  ord_ovr_oix_addit);
+}
+
+
+//sample atlases and fill the array.
+void populate_from_atlas( uint3 id : SV_DispatchThreadID,  
+                          Texture2D<uint4> orderAtlas,  RWTexture2D<uint4> overlayAtlas,  Texture2D<uint4> additiveAtlas,
+                          int arraysOffset,
+                          inout uint order_overl_oix[MASKS_OF_ALL_ATLASES] ){//for comment see 'take_next_16_masks()'
+    uint2 sectorOffset = uint2(0,0);
+    uint2 atlas_coord;
+
+    for(int r=0; r<ATLAS_NUM_ROWS; r++){
+        for(int c=0; c<ATLAS_NUM_COLS; c++){
+
+            atlas_coord =  sectorOffset + id.xy;
+            take_next_16_masks( atlas_coord,  orderAtlas,  overlayAtlas,  additiveAtlas,  arraysOffset,  order_overl_oix );
+            sectorOffset.x += ATLAS_SECTOR_SIZE;
+            arraysOffset   += MASKS_PER_TEXEL;
+        }
+        sectorOffset.x  = 0;
+        sectorOffset.y += ATLAS_SECTOR_SIZE;
+    }
+}
+
+
+// Saves all overlay masks with range of [0, 255].
+// To do so, shifts by 24 bits and with 0xFF  to get last 8bits. 
+// Then, combines four of such masks  to obtain x,  four for y,  four for z,  four for w.
+void save_next_16_overlayMasks( uint2 atlasCoord,  RWTexture2D<uint4> overlayAtlas,
+                                int ix,//offset in the array.
+                                in uint order_overl_oix_addit[MASKS_OF_ALL_ATLASES]){
+    uint4 val = uint4(
+         ((order_overl_oix_addit[ix + 0] >> 8) & 0xFF)
+      | (((order_overl_oix_addit[ix + 1] >> 8) & 0xFF) << 8)
+      | (((order_overl_oix_addit[ix + 2] >> 8) & 0xFF) << 16) 
+      | (((order_overl_oix_addit[ix + 3] >> 8) & 0xFF) << 24),
+
+         ((order_overl_oix_addit[ix + 4] >> 8) & 0xFF)
+      | (((order_overl_oix_addit[ix + 5] >> 8) & 0xFF) << 8)
+      | (((order_overl_oix_addit[ix + 6] >> 8) & 0xFF) << 16)
+      | (((order_overl_oix_addit[ix + 7] >> 8) & 0xFF) << 24),
+
+         ((order_overl_oix_addit[ix + 8] >> 8) & 0xFF) 
+      | (((order_overl_oix_addit[ix + 9] >> 8) & 0xFF) << 8)
+      | (((order_overl_oix_addit[ix +10] >> 8) & 0xFF) << 16)
+      | (((order_overl_oix_addit[ix +11] >> 8) & 0xFF) << 24),
+
+         ((order_overl_oix_addit[ix + 12] >> 8) & 0xFF)
+      | (((order_overl_oix_addit[ix + 13] >> 8) & 0xFF) << 8)
+      | (((order_overl_oix_addit[ix + 14] >> 8) & 0xFF) << 16)
+      | (((order_overl_oix_addit[ix + 15] >> 8) & 0xFF) << 24)
+    );
+    overlayAtlas[atlasCoord.xy] = val;
+}
+
+
+void save_to_overlayAtlas( uint3 id : SV_DispatchThreadID,
+                           RWTexture2D<uint4> overlayAtlas,
+                           int arraysOffset,  in uint order_overl_oix_addit[MASKS_OF_ALL_ATLASES] ){
+    uint2 sectorOffset = uint2(0,0);
+    uint2 atlas_coord;
+
+    for(int r=0; r<ATLAS_NUM_ROWS; r++){
+        for(int c=0; c<ATLAS_NUM_COLS; c++){
+
+            atlas_coord =  sectorOffset + id.xy;
+            save_next_16_overlayMasks(atlas_coord, overlayAtlas, arraysOffset, order_overl_oix_addit );
+
+            sectorOffset.x += ATLAS_SECTOR_SIZE;
+            arraysOffset   += MASKS_PER_TEXEL;
+        }
+        sectorOffset.x  = 0;
+        sectorOffset.y += ATLAS_SECTOR_SIZE;
+    }
+}
+
+
+void calc_overlay_weights(inout uint sortedArr[MASKS_OF_ALL_ATLASES]){
+    //for first entry, ensure its overlay mask is the same as additive:
+    uint packedValue0 = sortedArr[0];
+    uint additive0    = (packedValue0>>24) & 0xFF;
+    uint overlay0  = additive0;
+    sortedArr[0]   = (packedValue0 & 0xFFFF00FF) | (overlay0<<8);
+
+    //do other masks below the first:
+
+    uint remainingVis =  255 - additive0;
+
+    for(int i=1;  i<MASKS_OF_ALL_ATLASES;  ++i){//start from i=1, first iter was already done
+        uint packedValue = sortedArr[i];
+        uint additive    = (packedValue>>24) & 0xFF;
+
+        //check if remainingVis is greater than zero (to avoid dividing by zero)
+        uint overlayMask = (remainingVis>0) ? ((additive << 8)/remainingVis) //multiplying by 256 and dividing by remainingVis
+                                            : ((packedValue>>8) & 0xFF);//Else, keep current overlay value.
+
+        sortedArr[i] = (packedValue & 0xFFFF00FF) | (overlayMask<<8);
+
+        remainingVis -= additive;
+    }
+}
+
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID){
+    //only proceed if memory is different to what was there before
+    // Otherwise, we had already did the re-ordering for this texel and it's are up-to-date.
+    //sample the brush-strokes using 'id'.
+    //id works because it samples within a sector, not within whole inside atlas.
+    uint3 topMem_prev = _TopMemory_prev[id.xy];
+    uint3 topMem_curr = _TopMemory_curr[id.xy];
+    if(topMem_prev.x==topMem_curr.x  &&  topMem_prev.y==topMem_curr.y){ return; }//z doesn't matter for check.
+
+    // Aray of  packed values.
+    // first 8bits:  orderIx,  
+    // second 8bits: overlayMask,  
+    // third 8bits:  original index (from this entire array)
+    // fourth 8bits: aditiveMask
+    // This allows to fit it into memory (instead of float4 we use one uint).
+    uint order_overl_oix_addit[ MASKS_OF_ALL_ATLASES ]; 
+    int arraysOffset = 0;
+    #if defined(MASKS_TOTAL_64) || defined(MASKS_TOTAL_128)
+        populate_from_atlas( id,  _OrderAtlas_0,  _OverlayAtlas_0,  _AdditiveAtlas_0,
+                             arraysOffset,  order_overl_oix_addit );
+    #endif
+
+    #ifdef MASKS_TOTAL_128
+        arraysOffset += MASKS_PER_ATLAS;
+        populate_from_atlas( id,  _OrderAtlas_1,  _OverlayAtlas_1,  _AdditiveAtlas_1,
+                             arraysOffset,  order_overl_oix_addit );
+    #endif
+
+    // Now we have the array filled. Let's sort it by its 'order' values, 
+    // and compute the overlay weights:
+    sortBy_order_in_first8Bits( order_overl_oix_addit );
+    calc_overlay_weights( order_overl_oix_addit );
+    unsortBy_originalIx( order_overl_oix_addit );
+    
+
+    //store the results into atlas of overlay weights:
+    #if defined(MASKS_TOTAL_64) || defined(MASKS_TOTAL_128)
+        arraysOffset = 0;
+        save_to_overlayAtlas(id, _OverlayAtlas_0,  arraysOffset,  order_overl_oix_addit );
+    #endif
+
+    #ifdef MASKS_TOTAL_128
+        arraysOffset += MASKS_PER_ATLAS;
+        save_to_overlayAtlas(id, _OverlayAtlas_1,  arraysOffset,  order_overl_oix_addit );
+    #endif
+}

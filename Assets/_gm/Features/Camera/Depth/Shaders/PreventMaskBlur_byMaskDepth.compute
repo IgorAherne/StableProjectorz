@@ -1,0 +1,160 @@
+// used by PreventBlur_if_DistanceFromMask.cs
+
+#pragma kernel PreventBlur_kernel
+#pragma kernel BlurBorders_kernel
+
+// Size of thread group for each kernel. 
+// Must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32
+#define THREADS_Y 1
+
+Texture2D<float> _ScreenMask_original; //without blur
+RWTexture2D<float> _ScreenMask_blurred; //WILL ADJUST THIS ONE.
+float4 _InvMask_WidthHeight;
+
+Texture2D<float> _ScreenDepth;
+int _ScreenDepth_Width;
+int _ScreenDepth_Height;
+
+Texture2D<float> _MaskEdges;
+int _MaskEdges_Width;
+int _MaskEdges_Height;
+
+//depth only of regions that are masked. has a smaller size than mask or screen depth:
+Texture2D<float> _MaskDepth_downsampled; 
+int _MaskDepth_Width;
+int _MaskDepth_Height;
+float4 _MaskDepthDownsampled_invWH;//inverse width height
+
+float _inv_CameraFarClipPlane;
+float _zThreshUnits; //blur won't leak between surfaces offsetted by this much.
+
+//invoked for every textel of the _ScreenMask_blurred.
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void PreventBlur_kernel(uint3 id : SV_DispatchThreadID){
+    
+    float mask_orig = _ScreenMask_original[id.xy];
+    
+    if(mask_orig > 0){ //Already inside the original mask, which is exactly on top of the brushed area.
+        return;        //Don't hide the mask in this location, allow it to exist..
+    }    
+    //else we are not in the original mask. See if we are nearby it:
+    
+    // MaskDepth has different resolution than mask, so calculate uvs.
+    // Round to the nearest integer, by using the +0.5 and then truncating by (uint2).
+    float2 id_uv         =  id.xy * _InvMask_WidthHeight.xy;
+    float2 d_sampleCoord =  id_uv * (float2(_ScreenDepth_Width, _ScreenDepth_Height));
+    float myDepth        = _ScreenDepth[d_sampleCoord];
+    
+    // MaskDepth has different resolution than mask, so use the uvs.
+    // Round to the nearest integer, by using the +0.5 and then truncating by (int2).
+    int2 startId = int2(id_uv * float2(_MaskDepth_Width, _MaskDepth_Height) + float2(0.5, 0.5));
+    
+    int SearchBox_halfSize   = 16; //using fewer than 16 samples doesn't allow for wide blur (would clamp it)
+    int EdgeSamplesAlongLine = 16; //how many samples to draw along vector between ID and each texel in the search box.
+    float invEdgeSamplesAlongLine = 1.0f / (EdgeSamplesAlongLine); //DO NOT do 1/(EdgeSamplesAlongLine + 1)
+                                                                     //We must sample last one, else sometimes getting streaks.
+    float minDepthDiff = 1.0;                                        //Because endpoing might be on the edge. Don't skip it.
+    
+    int2 closestOriginal = int2(99999,99999);
+     
+    for (int x = -SearchBox_halfSize;  x <= SearchBox_halfSize;  ++x){
+        for (int y = -SearchBox_halfSize;  y <= SearchBox_halfSize;  ++y){
+            
+            int2 sampleCoord =  (int2)startId + int2(x, y);//NOTICE: int, because can be negative.
+            float maskDepth  = _MaskDepth_downsampled[sampleCoord]; 
+            
+            float isValid  =  maskDepth>0? 1:0;
+                  isValid *=  (startId.x+x >= 0? 1 : 0)  *  (startId.y+y >= 0? 1 : 0);
+                  isValid *=  (startId.x+x < _MaskDepth_Width? 1:0)  *  (startId.y+y < _MaskDepth_Height? 1:0);
+            
+            if(isValid < 0.5){ continue; } //either outside bounds, or depth is 0 (empty space)
+            
+            isValid = 1;
+            // Investigate if there is an edge between id and this xy sample.
+            // Check the edge texture several times between them. 
+            // If an edge is found in at least one sample, make isValid=false:
+            float2 sampleUV   =  sampleCoord * _MaskDepthDownsampled_invWH.xy;
+            for (int i=1; i<EdgeSamplesAlongLine; ++i){
+                float2 edgeUV  =  lerp(id_uv, sampleUV, i*invEdgeSamplesAlongLine); 
+                int2 edgeCoord =  int2(edgeUV * float2(_MaskEdges_Width, _MaskEdges_Height) + float2(0.5, 0.5));
+                isValid       *=  saturate(_MaskEdges[edgeCoord]) > 0 ?  0 : 1;
+            }
+            float depthDiff =  isValid>0 ? abs(maskDepth - myDepth)  :  1;
+            minDepthDiff    =  min(depthDiff, minDepthDiff);
+            
+            closestOriginal =  isValid > 0 ?  int2(min(closestOriginal.x,abs(x)), min(closestOriginal.y,abs(y)))
+                                           :  closestOriginal;
+        }
+    } 
+    float zThresh = _zThreshUnits * _inv_CameraFarClipPlane;
+    float survive =  (minDepthDiff < zThresh)? 1 : 0;
+    
+    int2 eCoord =  int2(id_uv * float2(_MaskEdges_Width, _MaskEdges_Height));
+    _ScreenMask_blurred[id.xy] = survive * _ScreenMask_blurred[id.xy];
+}
+
+
+Texture2D<float> _ScreenMask_blurred_cpy;
+int _ScreenMask_Width;
+int _ScreenMask_Height;
+//WILL BE OUTPUTTING TO '_ScreenMask_blurred'
+
+
+//invoked for every texel of the _ScreenMask_blurred.
+//Fades the blurred texel the closer it is to its empty texels.
+//Doesn't fade if original mask has a non-zero value at its coord.
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void BlurBorders_kernel(uint3 id : SV_DispatchThreadID)
+{
+    float mask_original = _ScreenMask_original[id.xy];
+    float mask_blurred  = _ScreenMask_blurred_cpy[id.xy];
+    
+    if(mask_original > 0 || mask_blurred == 0){  return;  }
+    
+    //search for closest texel in original mask (non-blurred)
+    //search for closest texel in blurred mask too.
+    int SearchBox_halfSize = 12;
+    float nearest_non0_orig = 99999.0;
+    float nearest0_blurred = 99999.0+1;
+    
+    for (int x = -SearchBox_halfSize;  x <= SearchBox_halfSize;  ++x){
+        for (int y = -SearchBox_halfSize;  y <= SearchBox_halfSize;  ++y){
+            int2 offset = int2(x, y);
+            int2 coord  = id.xy + offset;
+            
+            // Check bounds
+            bool isValid = coord.x >= 0  &&  coord.y >= 0  &&
+                           coord.x < _ScreenMask_Width  &&  coord.y < _ScreenMask_Height;
+            
+            float mask_original_neighbor = _ScreenMask_original[coord];
+            float mask_blurred_neighbor  = _ScreenMask_blurred_cpy[coord];
+                
+            float squaredDist = x*x + y*y;
+                
+            nearest_non0_orig = mask_original_neighbor > 0  &&  isValid ? min(nearest_non0_orig, squaredDist)
+                                                                        : nearest_non0_orig;
+            
+            nearest0_blurred =  mask_blurred_neighbor <0.1  &&  isValid ? min(nearest0_blurred, squaredDist)
+                                                                        : nearest0_blurred;
+        }
+    }
+    nearest_non0_orig = sqrt(nearest_non0_orig);
+    nearest0_blurred  = sqrt(nearest0_blurred);
+    
+    // Determine how close to the empty texel we are from the BLURRED mask.
+    // The closer, the less visible we are.
+    // We always compare to the HALF size of the search box.
+    // <--------*|--------->
+    // <----*----|--------->
+    // <*--------|--------->
+    // But, if the range is tight (narrower than half size), we use it instead of the half size range:
+    // <-*--->   |
+    float range  =  min(SearchBox_halfSize,  nearest_non0_orig + nearest0_blurred);
+    
+    float denom = rcp(max(0.0001, range));
+    
+    float coeff = saturate(nearest0_blurred * denom);
+    _ScreenMask_blurred[id.xy] *= coeff;
+}
+ 

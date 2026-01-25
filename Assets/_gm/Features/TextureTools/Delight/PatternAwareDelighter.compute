@@ -1,0 +1,367 @@
+// LAB-space texture analyzer detecting shading artifacts via pattern detection.
+// Examines frequency bands, symmetry, and edge patterns in multiple directions.
+// Searches for repeating elements to distinguish textures from shading effects.
+// Outputs single-channel mask highlighting probable shading regions.
+// Higher mask values indicate stronger shading presence versus texture patterns.
+// Features: LAB deltas, frequency bands, symmetry ratios, edge spacing, directional gradients, pattern periodicity, gradient coherence.
+
+// with fixes of blunder a
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+Texture2D<float4> ArtTexture; // Input texture
+RWTexture2D<float4> ArtTexture_Delit; // Stores the compensated texture
+RWTexture2D<float> OutputMask; // Stores the shading mask
+
+int TextureWidth;
+int TextureHeight;
+
+// Weights and thresholds for the analysis
+float LuminanceWeight = 0.7;
+float ColorWeight = 0.3;
+float GradCoherenceWeight = 0.3;
+float PeriodicityWeight = 0.25;
+float PatternWeight = 0.1;
+float Sensitivity = 1.2;
+float TextureThreshold = 0.15;
+
+#define PI 3.14159265
+
+// Color space conversion functions
+
+float3 RGB2XYZ(float3 rgb)
+{
+    rgb = rgb <= 0.04045f ? rgb / 12.92f : pow((rgb + 0.055f) / 1.055f, 2.4f);
+
+    float3x3 mat = float3x3(
+        0.4124564, 0.3575761, 0.1804375,
+        0.2126729, 0.7151522, 0.0721750,
+        0.0193339, 0.1191920, 0.9503041
+    );
+    return mul(mat, rgb);
+}
+
+float3 XYZ2LAB(float3 xyz)
+{
+    float3 n = xyz / float3(0.95047, 1.0, 1.08883);
+
+    float threshold = 216.0 / 24389.0;
+    float kappa = 24389.0 / 27.0;
+
+    n = n > threshold ? pow(n, 1.0 / 3.0) : (kappa * n + 16.0) / 116.0;
+
+    float L = 116.0 * n.y - 16.0;
+    float a = 500.0 * (n.x - n.y);
+    float b = 200.0 * (n.y - n.z);
+
+    return float3(L, a, b);
+}
+
+float3 RGB2LAB(float3 rgb)
+{
+    return XYZ2LAB(RGB2XYZ(rgb));
+}
+
+float3 LAB2XYZ(float3 lab)
+{
+    float y = (lab.x + 16.0) / 116.0;
+    float x = lab.y / 500.0 + y;
+    float z = y - lab.z / 200.0;
+
+    float threshold = 6.0 / 29.0;
+
+    x = x > threshold ? x * x * x : (x - 16.0 / 116.0) / 7.787;
+    y = y > threshold ? y * y * y : (y - 16.0 / 116.0) / 7.787;
+    z = z > threshold ? z * z * z : (z - 16.0 / 116.0) / 7.787;
+
+    float3 xyz;
+    xyz.x = x * 0.95047;
+    xyz.y = y * 1.00000;
+    xyz.z = z * 1.08883;
+
+    return xyz;
+}
+
+float3 XYZ2RGB(float3 xyz)
+{
+    float3x3 mat = float3x3(
+        3.2404542, -1.5371385, -0.4985314,
+        -0.9692660, 1.8760108, 0.0415560,
+        0.0556434, -0.2040259, 1.0572252
+    );
+
+    float3 rgb = mul(mat, xyz);
+
+    rgb = rgb <= 0.0031308 ? 12.92 * rgb : 1.055 * pow(rgb, 1.0 / 2.4) - 0.055;
+
+    return saturate(rgb);
+}
+
+float3 LAB2RGB(float3 lab)
+{
+    return XYZ2RGB(LAB2XYZ(lab));
+}
+
+// Function to compensate the color based on the mask value
+float3 CompensateColor(float3 labColor, float maskValue)
+{
+    // Consider preserving some local contrast even when compensating
+    float localContrast = 0.2; // Preserve 20% of original deviation
+    float targetL = 50.0;
+    float deviation = labColor.x - targetL;
+    float adjustedL = targetL + deviation * (1.0 - maskValue * (1.0 - localContrast));
+    
+    // Optionally adjust saturation too, as shading often affects saturation
+    float2 adjustedAB = labColor.yz * (1.0 + maskValue * 0.2); // Boost saturation slightly
+    
+    return float3(adjustedL, adjustedAB);
+}
+
+// Helper function to safely sample the texture with clamped positions
+float4 SampleArtTexture(int2 pos)
+{
+    int2 clampedPos = clamp(pos, int2(0, 0), int2((int) TextureWidth - 1, (int) TextureHeight - 1));
+    return ArtTexture.Load(int3(clampedPos, 0));
+}
+
+// Helper function to get LAB color at a position
+float3 SampleLAB(int2 pos)
+{
+    float4 color = SampleArtTexture(pos);
+    return RGB2LAB(color.rgb);
+}
+
+// Predefined direction vectors for 8 directions
+static const int2 directionOffsets8[8] =
+{
+    int2(1, 0), // 0 degrees
+    int2(1, 1), // 45 degrees
+    int2(0, 1), // 90 degrees
+    int2(-1, 1), // 135 degrees
+    int2(-1, 0), // 180 degrees
+    int2(-1, -1), // 225 degrees
+    int2(0, -1), // 270 degrees
+    int2(1, -1) // 315 degrees
+};
+
+// Predefined direction vectors for 4 directions
+static const int2 directionOffsets4[4] =
+{
+    int2(1, 0), // Right
+    int2(0, 1), // Up
+    int2(-1, 0), // Left
+    int2(0, -1) // Down
+};
+
+// Analysis functions
+
+float AnalyzePatternFrequency(int2 pos, int2 direction, int maxOffset)
+{
+    float3 base = SampleLAB(pos);
+    float frequencies[4] = { 0, 0, 0, 0 };
+
+    for (int offset = 1; offset <= maxOffset; offset++)
+    {
+        int2 samplePos = pos + direction * offset;
+        float3 sample = SampleLAB(samplePos);
+
+        float diff = length(base - sample);
+        int band = (offset - 1) / 2;
+        frequencies[band] += diff;
+    }
+
+    float patternStrength = 0;
+    for (int i = 0; i < 3; i++)
+    {
+        float bandDiff = abs(frequencies[i] - frequencies[i + 1]);
+        patternStrength += 1.0 - saturate(bandDiff / TextureThreshold);
+    }
+
+    return patternStrength / 3.0;
+}
+
+float DetectSymmetry(int2 pos, int radius)
+{
+    float3 center = SampleLAB(pos);
+    float symmetryScore = 0;
+
+    for (int offset = 1; offset <= radius; offset++)
+    {
+        float3 left = SampleLAB(pos + int2(-offset, 0));
+        float3 right = SampleLAB(pos + int2(offset, 0));
+        float3 top = SampleLAB(pos + int2(0, -offset));
+        float3 bottom = SampleLAB(pos + int2(0, offset));
+
+        float horizSymmetry = 1.0 - saturate(length(left - right) / TextureThreshold);
+        float vertSymmetry = 1.0 - saturate(length(top - bottom) / TextureThreshold);
+
+        float weight = 1.0 / offset;
+        symmetryScore += (horizSymmetry + vertSymmetry) * weight;
+    }
+
+    return symmetryScore / radius;
+}
+
+float DetectEdgePattern(int2 pos, int radius)
+{
+    float edgePattern = 0;
+    float3 center = SampleLAB(pos);
+
+    // Use predefined directions
+    for (int dirIndex = 0; dirIndex < 4; dirIndex++)
+    {
+        int2 dir = directionOffsets4[dirIndex];
+
+        float3 prev = center;
+        float edgeCount = 0;
+        for (int i = 1; i <= radius; i++)
+        {
+            int2 samplePos = pos + dir * i;
+            float3 curr = SampleLAB(samplePos);
+            float diff = length(curr - prev);
+
+            if (diff > TextureThreshold)
+            {
+                edgeCount++;
+            }
+            prev = curr;
+        }
+
+        float normalizedEdgeCount = edgeCount / float(radius);
+        edgePattern += normalizedEdgeCount;
+    }
+
+    return edgePattern / 4.0;
+}
+
+float AnalyzeGradientCoherence(int2 pos, int radius)
+{
+    float3 center = SampleLAB(pos);
+    float coherence = 0;
+
+    for (int r = 1; r <= radius; r++)
+    {
+        float smooth = 0;
+        float3 ring[8];
+
+        // Use predefined directions
+        for (int i = 0; i < 8; i++)
+        {
+            int2 offset = directionOffsets8[i] * r;
+            ring[i] = SampleLAB(pos + offset);
+        }
+
+        for (int i = 0; i < 8; i++)
+        {
+            float3 prev = ring[(i + 7) % 8];
+            float3 next = ring[(i + 1) % 8];
+            float smoothness = 1.0 - abs(2.0 * length(ring[i] - center) -
+                                         length(prev - center) -
+                                         length(next - center));
+            smooth += smoothness;
+        }
+
+        coherence += smooth / (8.0 * r);
+    }
+
+    return coherence / radius;
+}
+
+float DetectPeriodicity(int2 pos, int2 direction, int maxOffset)
+{
+    float3 samples[32];
+
+    for (int i = 0; i < maxOffset; i++)
+    {
+        int2 samplePos = pos + direction * i;
+        samples[i] = SampleLAB(samplePos);
+    }
+
+    float maxPeriodicity = 0;
+    for (int period = 2; period < maxOffset / 2; period++)
+    {
+        float periodScore = 0;
+        int comparisons = 0;
+
+        for (int offset = 0; offset < maxOffset - period; offset++)
+        {
+            float colorDifference = length(samples[offset] - samples[offset + period]);
+            float similarity = 1.0 - colorDifference / 100.0; // Assuming max color difference is 100 in LAB space
+            similarity = saturate(similarity);
+            periodScore += similarity;
+            comparisons++;
+        }
+
+        if (comparisons > 0)
+            maxPeriodicity = max(maxPeriodicity, periodScore / comparisons);
+    }
+
+    return maxPeriodicity;
+}
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    // Check if within texture bounds
+    if (id.x >= TextureWidth || id.y >= TextureHeight)
+    {
+        return;
+    }
+
+    int2 pos = int2(id.xy);
+
+    float3 currentLAB = SampleLAB(pos);
+
+    // Calculate deviations in luminance and color
+    float luminanceDeviation = abs(currentLAB.x - 50.0) / 100.0;
+    float colorDeviation = (abs(currentLAB.y) + abs(currentLAB.z)) / 200.0;
+
+    // Analyze patterns in different directions
+    float horizontalPattern = AnalyzePatternFrequency(pos, int2(1, 0), 8);
+    float verticalPattern = AnalyzePatternFrequency(pos, int2(0, 1), 8);
+    float diagonalPattern1 = AnalyzePatternFrequency(pos, int2(1, 1), 8);
+    float diagonalPattern2 = AnalyzePatternFrequency(pos, int2(-1, 1), 8);
+
+    // Detect symmetry and edge patterns
+    float symmetry = DetectSymmetry(pos, 4);
+    float edgePattern = DetectEdgePattern(pos, 4);
+
+    // Analyze gradient coherence
+    float gradientCoherence = AnalyzeGradientCoherence(pos, 4);
+
+    // Detect periodicity in patterns
+    float horizontalPeriodicity = DetectPeriodicity(pos, int2(1, 0), 32);
+    float verticalPeriodicity = DetectPeriodicity(pos, int2(0, 1), 32);
+
+    // Calculate overall pattern score
+    float patternScore = (horizontalPattern + verticalPattern +
+                          diagonalPattern1 + diagonalPattern2) / 4.0;
+    patternScore = saturate(patternScore + symmetry + edgePattern);
+
+    // Compute the shading likelihood
+    float shadingLikelihood = saturate(
+        luminanceDeviation * LuminanceWeight
+        + colorDeviation * ColorWeight
+        + gradientCoherence * GradCoherenceWeight
+        - patternScore * PatternWeight
+        - (horizontalPeriodicity + verticalPeriodicity) * PeriodicityWeight
+    );
+    
+    // Adjust sensitivity and generate final mask value
+    float finalMask = pow(shadingLikelihood, 1.0 / Sensitivity);
+    finalMask = finalMask < 0.1 ? 0.0 : finalMask; // Ignore very weak shading detection
+    OutputMask[pos] = saturate(finalMask);
+
+    // Compensate the colors based on the mask
+    float3 compensatedLAB = CompensateColor(currentLAB, finalMask);
+    float3 compensatedRGB = LAB2RGB(compensatedLAB);
+
+    // Output both mask and compensated color
+    ArtTexture_Delit[pos] = float4(compensatedRGB, 1);
+    
+    return;
+}

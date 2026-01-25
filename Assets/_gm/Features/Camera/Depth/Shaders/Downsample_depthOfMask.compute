@@ -1,0 +1,84 @@
+// used by PreventBlur_if_DistanceFromMask.cs
+//
+// Outputs a texture that's 3 times smaller than the Mask (outputs a downsampled tex)
+// The texture is averaged depth, but only from the masked/brushed areas.
+//
+// When downsampling, we always prefer depth of masked texels, instead of depth from empty texels.
+//
+// Later on, this will simplify process of searching neighbors of any non-masked texels.
+// It will be easy, because the texture is low-res and covers more with every texel.
+// (Later on, we will need to know the depth of a closest masked texel).
+
+#pragma kernel DownsampleKernel_x4
+
+// Size of thread group for each kernel. 
+// Must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32
+#define THREADS_Y 1
+
+Texture2D<float> _ScreenMask;
+Texture2D<float> _ScreenDepthLinear01;
+RWTexture2D<float> _ScreenDepthMaskDownsampled;
+
+int _Mask_Width;
+int _Mask_Height;
+
+int _Depth_Width;
+int _Depth_Height;
+
+int _Downsampled_Width;
+int _Downsampled_Height;
+
+float4 _InvMask_WidthHeight;
+
+
+//invoked for every textel of the small DOWNSAMPLED texture.
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void DownsampleKernel_x4(uint3 id : SV_DispatchThreadID)
+{
+    // Ensure we're within the downsampled texture bounds
+    if (id.x >= (uint)_Downsampled_Width  ||  id.y >= (uint)_Downsampled_Height){  return; }
+    // Initialize accumulators for depth and weight
+    float depthSum = 0.0;
+    float weightSum = 0.0;
+
+    // Calculate the base coordinates in the original texture
+    int BoxSizeHalf = 2; 
+    int2 baseCoord = int2(id.xy * (BoxSizeHalf*2));
+
+    // Process the corresponding 4x4 block in the original texture.
+    // NOTICE: actually evaluating 5x5:  2 to the left,  self,  2 to the right. 
+    // Otherwise mask is shifted by 1 texl down leftwards. Visualization confirms it. Oct 2024
+    [unroll] 
+    for (int offsetX = BoxSizeHalf;  offsetX <= BoxSizeHalf;  offsetX++){
+        [unroll]
+        for (int offsetY = BoxSizeHalf;  offsetY <= BoxSizeHalf;  offsetY++){ 
+            // Calculate the source pixel coordinates
+            int2 sampleCoord = baseCoord + int2(offsetX, offsetY);
+
+            float mask = _ScreenMask[int2(sampleCoord)].r;
+            
+            // Compute validity of the sample (1.0 if in bounds, 0.0 if out of bounds)
+            float validX =  sampleCoord.x >= (int)_Mask_Width ?  0 : 1;
+            float validY =  sampleCoord.y >= (int)_Mask_Height ? 0 : 1;
+            
+            float valid  =  validX * validY * (mask>0? 1 : 0);
+
+            // Read the depth value at the source pixel.
+            // Depth has different resolution than mask, so calculate uvs.
+            // Round to the nearest integer, by using the +0.5 and then truncating by (int2).
+            float2 uv    = sampleCoord * _InvMask_WidthHeight.xy;
+            sampleCoord = (int2) (uv * float2(_Depth_Width, _Depth_Height) + float2(0.5, 0.5));
+            float depth  = _ScreenDepthLinear01[sampleCoord];
+
+            // Accumulate weighted depth and weight
+            depthSum  += depth * valid; 
+            weightSum += valid;
+        }
+    }
+    // Calculate the average depth (avoid division by zero)
+    float invWeightSum = rcp(max(weightSum, 1.0));
+    float averageDepth = depthSum * invWeightSum;
+
+    _ScreenDepthMaskDownsampled[id.xy] = averageDepth;
+}

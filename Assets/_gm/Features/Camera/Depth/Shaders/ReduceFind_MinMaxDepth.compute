@@ -1,0 +1,96 @@
+// Performs reduction-algorithm, to find min and maximum of depth.
+//
+// At the final dispatch invocation, one float entry is ADDED into '_Depth_MinMax_Final[0]' and [1].
+// First float represents 'minimum depth' And another is 'maximum depth'.
+// 
+// This is useful, for adjusting the contrast of depth.
+
+#pragma kernel CSMain_4x4_float1;
+#pragma kernel CSMain_4x4_float2;
+#pragma kernel CSMain_4x4_float2_final
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32
+#define THREADS_Y 1
+#define THREAD_ZONE_SIDE 4//thread looks at 4x4 area next to it. So, threads of group are spaced apart by that much.
+ 
+
+Texture2D<float> _DepthTexture_f1;//Read at first iteration. X is Min Y is Max.
+Texture2D<float2> _DepthTexture_f2;//Read at subsequent iterations.
+uint _DepthTexture_Width;
+uint _DepthTexture_Height;
+
+RWTexture2D<float2> _OutputTexture_f2;//each texel receives two floats:  Min, Max 
+
+//contains just two scalar entries: Min, Max
+//We will output to it, if it's the final reduction-iteration.
+RWStructuredBuffer<float> _Depth_MinMax_Final;
+
+
+
+float2 Find_MinMax_f1(uint3 dtid : SV_DispatchThreadID){
+    uint2 gid = dtid.xy*THREAD_ZONE_SIDE; // Each thread now starts at a 4x4 block base
+    float2 min_max = float2(1,0);
+    uint2 currentID;
+
+    for(uint dy=0; dy<THREAD_ZONE_SIDE; ++dy){
+        for(uint dx=0; dx<THREAD_ZONE_SIDE; ++dx){
+            currentID = uint2(gid.x+dx, gid.y+dy);
+            if(currentID.x>=_DepthTexture_Width){ continue; }
+            if(currentID.y>=_DepthTexture_Height){ continue; }
+            
+            //skip zero values (there will always be black 0 far-away color).
+            float d = _DepthTexture_f1[currentID];
+            bool isZero =  d==0;
+            min_max.x =  isZero? min_max.x  :  (d<min_max.x?  d : min_max.x);
+            min_max.y =  d>min_max.y?  d : min_max.y;
+        }
+    }
+    return min_max;
+}
+
+
+float2 Find_MinMax_f2( uint3 dtid : SV_DispatchThreadID ){
+    uint2 gid = dtid.xy*THREAD_ZONE_SIDE; // Each thread now starts at a 4x4 block base
+    float2 min_max = float2(1,0);
+    uint2 currentID;
+
+    for(uint dy=0; dy<THREAD_ZONE_SIDE; ++dy){
+        for(uint dx=0; dx<THREAD_ZONE_SIDE; ++dx){
+            currentID = uint2(gid.x+dx, gid.y+dy);
+            if(currentID.x>=_DepthTexture_Width){ continue; }
+            if(currentID.y>=_DepthTexture_Height){ continue; }
+            
+            //skip zero values (there will always be black 0 far-away color).
+            float2 d2 = _DepthTexture_f2[currentID];
+            bool isZero =  d2.x==0;
+            min_max.x =  isZero? min_max.x  :  (d2.x<min_max.x?  d2.x : min_max.x);
+            min_max.y =  d2.y>min_max.y?  d2.y : min_max.y;
+        }
+    }
+    return min_max;
+}
+
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain_4x4_float1(uint3 dtid : SV_DispatchThreadID){
+    float2 min_max = Find_MinMax_f1(dtid);
+    _OutputTexture_f2[dtid.xy] = min_max;
+}
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain_4x4_float2(uint3 dtid : SV_DispatchThreadID){
+    float2 min_max = Find_MinMax_f2(dtid);
+    _OutputTexture_f2[dtid.xy] = min_max;
+}
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain_4x4_float2_final(uint3 dtid : SV_DispatchThreadID){ 
+    //only first thread does final reduction, to avoid race conditions:
+    if(dtid.x!=0 || dtid.y!=0 || dtid.z!=0){ return; } 
+     float2 minMax = Find_MinMax_f2(dtid);
+    _Depth_MinMax_Final[0] = minMax.x < minMax.y ?  minMax.x : minMax.y;
+    _Depth_MinMax_Final[1] = minMax.y > minMax.x ?  minMax.y : minMax.x;
+}

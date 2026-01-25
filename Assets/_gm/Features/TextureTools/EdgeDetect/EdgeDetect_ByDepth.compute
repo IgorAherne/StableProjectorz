@@ -1,0 +1,193 @@
+#pragma kernel EdgeDetect
+#pragma kernel BoxBlur
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32
+#define THREADS_Y 1
+
+#pragma multi_compile  _  HAS_SCREEN_MASK
+#pragma multi_compile  _  SEARCH_RANGE_1  SEARCH_RANGE_2  SEARCH_RANGE_3  SEARCH_RANGE_4
+
+Texture2D<float> _DepthTexture;
+float _DepthDifference_Thresh; //for example 0.03
+
+#ifdef HAS_SCREEN_MASK
+Texture2D<float> _ScreenMaskTexture;//for example, if user used inpaint. Set it to white otherwise.
+SamplerState sampler_ScreenMaskTexture;
+#endif
+
+RWTexture2D<float> _OutputTexture;
+
+SamplerState sampler_DepthTexture;
+
+
+int _TexWidth; 
+int _TexHeight;
+
+float _Blur_Stride;
+float _BlurPow;
+
+float _Curr_BlurDispatch; //for example "this is a third dispatch" of the BoxBlur().
+float _Total_BlurDispatchesExpected;//for example seven dispatches will be done.
+
+
+float sampleDepth_edgeDetect( uint3 id,  int2 offset, float2 inv_textureSize ){
+    
+    float depth = _DepthTexture[id.xy + offset].r;
+    #ifdef HAS_SCREEN_MASK
+        // Convert the sample coordinates to UV space.
+        // +0.5 to land it in the middle of texel. Otherwise, shifts everything 1 texel diagonally.
+        float2 sampleUV =  (id.xy + offset + 0.5) * inv_textureSize;
+        
+        float mask = _ScreenMaskTexture.SampleLevel(sampler_ScreenMaskTexture, sampleUV, 0).r;
+        depth *=  (mask > 0);//have to use bool, otherwise UV seams of high-poly meshes 
+                             //will have edges, even with Point-Clamp sampler. Aug 2024
+    #endif                   
+    return depth;
+}
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void EdgeDetect(uint3 id : SV_DispatchThreadID){
+    
+    float2 inv_textureSize = float2(1.0f/_TexWidth, 1.0f/_TexHeight);
+    
+    // Get the depth value at the current pixel
+    float depth =  sampleDepth_edgeDetect(id, int2(0,0), inv_textureSize);
+    if(depth == 0){return;} //infinite background
+    
+    // Search for depth differences in a loop
+    float maxDepthDiff = 0;
+
+    #ifdef SEARCH_RANGE_1
+      int range = 1;
+    #elif SEARCH_RANGE_2
+      int range = 2;
+    #elif SEARCH_RANGE_3
+      int range = 3;
+    #elif SEARCH_RANGE_4
+      int range = 4;
+    #else 
+      int range = 1;
+    #endif
+    
+    for (int x = -range; x <= range; x++)
+    {
+        for (int y = -range; y <= range; y++)
+        {
+            int2 offset = int2(x, y);
+            float neighborDepth = sampleDepth_edgeDetect(id, offset, inv_textureSize);
+            
+            float depthDiff =  abs(depth - neighborDepth);
+                  depthDiff =  neighborDepth==0? 1 : depthDiff;
+            maxDepthDiff = max(maxDepthDiff, depthDiff);
+        }
+    }
+
+    // Determine if it's an edge based on the maximum depth difference
+    float isEdge = step(_DepthDifference_Thresh, maxDepthDiff);
+     
+    //max, to have at least a tiny value. It will help us know during blur that it's not empty space, 
+    isEdge = max(1.0/255, isEdge); //and is 'inside' the silhuette.
+
+    // Write the result to the output texture
+    _OutputTexture[id.xy] = isEdge;
+}
+
+
+
+// Hash function to generate a random value based on pixel coordinates. 
+// Helps prevent grid-like pattern when stride is greater than 1. Returns value between 0 and 1. 
+float random(float2 uv){
+    float s = sin(dot(uv, float2(12.9898, 78.233)));
+    return frac(s * 43758.5453);
+}
+
+
+float inverseLerp(float a, float b, float t){
+    return (t-a) / max(0.00001,b-a);
+}
+
+
+float sampleDepth(uint3 id : SV_DispatchThreadID, float2 sampleOffset, float2 inv_textureSize, bool snapTinyValsToZero){
+    // Convert the sample coordinates to UV space.
+    // +0.5 to land it in the middle of texel. Otherwise, shifts everything 1 texel diagonally.
+    float2 sampleUV = (id.xy + sampleOffset + 0.5) * inv_textureSize;
+    // Sample the depth texture using bilinear interpolation
+    float d = _DepthTexture.SampleLevel(sampler_DepthTexture, sampleUV, 0);
+
+     //during edge detection we left tiny value to understand 
+    //that it's not empty space, and is inside silhuette. 
+    //So now, make sure to treat such values as zero:
+    float isTiny =  d<=(1.0/255 +0.001);
+          isTiny *= snapTinyValsToZero;
+
+    return isTiny>0? 0 : d;
+}
+
+ 
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void BoxBlur(uint3 id : SV_DispatchThreadID)
+{
+    float2 inv_textureSize = float2(1.0f / _TexWidth, 1.0f / _TexHeight);
+    float original = sampleDepth(id, float2(0, 0), inv_textureSize, false);
+     
+    //make strides tighter during first kernel dispatches.
+    //This prevents blobs around thick edges, and smoothes them evenly initially.
+    float age = _Curr_BlurDispatch / _Total_BlurDispatchesExpected;
+
+    //smoothness fades out when noisness fades in.
+    //0: hard   0.5: smooth   1: noisy
+    float hardness01   = saturate(    max(0, (0.5-_BlurPow)*2)  );
+    float smoothness01 = saturate(1 - abs(0.5-_BlurPow)*2);
+    float noisiness01  = saturate(inverseLerp(0.5, 1.0, _BlurPow));
+    noisiness01 = min(0.99, noisiness01);
+    
+    // pow(age, 1.2) makes borders more dark.
+    // But we actually want  pow(age, 0.8), which spreads-out more to borders, if smoothess is full.
+    float agePow = pow(abs(age), 1.001-(smoothness01)*0.2); 
+    
+    _Blur_Stride = max(0.005, _Blur_Stride);
+    _Blur_Stride *= age*2;
+    _Blur_Stride *= 1 + hardness01;
+    _Blur_Stride *= 1 + smoothness01;
+    _Blur_Stride *= 1 + noisiness01; //make even larger steps if noisiness is active.
+
+    // Generate a random offset:
+    float rnd = random(id.xy);
+    rnd = lerp(1, rnd*2, noisiness01);
+     
+    int _BlurIters = 6;
+    float total = 0;
+    float count = 0;
+
+    for (int x = -_BlurIters; x <= _BlurIters; x++){
+        for (int y = -_BlurIters; y <= _BlurIters; y++){
+            // Add the random offset to the sample coordinates
+            //NOTICE: useing 0.0001 to avoid division by zero during norm. Bugfix July 2024
+            float2 sampleOffset = float2(x+0.0001, y+0.0001);
+            sampleOffset = normalize(sampleOffset) * _BlurIters * _Blur_Stride * rnd;
+            
+            float d = sampleDepth(id, sampleOffset, inv_textureSize, true);
+
+            total += d;
+            count += lerp(0, 1, agePow); //increment count, closer to the usual 1, for later kernel dispatches.
+        }
+    }
+    count = max(1, count); //avoid division by zero
+    total = saturate(total / count);
+    
+    total = pow(total, 0.01 + hardness01 +  smoothness01 + noisiness01*0.6); //smoothness fades out when noisness fades in.
+
+    
+    float val = max(original, total);
+    
+    {//if last iter, sharpen up the smoothed borders, based on hardness (only for hardness)
+        float isLastIter =  _Curr_BlurDispatch == _Total_BlurDispatchesExpected - 1 ? 1:0;
+    
+        val =  lerp(  val,   pow(val, 1+hardness01*4),  isLastIter);
+    }
+    
+    _OutputTexture[id.xy] = val;
+}

@@ -1,0 +1,207 @@
+#define MAX_BLOCK_SZ 64
+#define LOG_MAX_BLOCK_SZ 6
+
+StructuredBuffer<uint> cb_in;
+RWStructuredBuffer<uint> cb_out;
+RWStructuredBuffer<uint> cb_outSorted;
+RWStructuredBuffer<uint> cb_prefixSums;
+RWStructuredBuffer<uint> cb_blockSums;
+RWStructuredBuffer<uint> cb_scanBlockSums;
+
+RWStructuredBuffer<uint> cb_outIndex;
+RWStructuredBuffer<uint> cb_indices;
+
+uniform uint _len;
+uniform uint _gridSize;
+uniform uint _shiftWidth;
+
+groupshared uint s_data[MAX_BLOCK_SZ];
+groupshared uint s_index[MAX_BLOCK_SZ];
+groupshared uint s_maskOut[MAX_BLOCK_SZ + 1];
+groupshared uint s_mergedScanMaskOut[MAX_BLOCK_SZ];
+groupshared uint s_maskOutSums[4];
+groupshared uint s_scanMaskOutSums[4];
+
+#pragma kernel RadixSortLocal
+[numthreads(MAX_BLOCK_SZ, 1, 1)]
+void RadixSortLocal(
+  uint DTid : SV_DISPATCHTHREADID,
+  uint Gidx : SV_GROUPINDEX,
+  uint Gid : SV_GROUPID
+)
+{
+  // need shared memory array for:
+  // - block's share of the input data (local sort will be put here too)
+  // - mask outputs
+  // - scanned mask outputs
+  // - merged scaned mask outputs ("local prefix sum")
+  // - local sums of scanned mask outputs
+  // - scanned local sums of scanned mask outputs
+
+  // for all radix combinations:
+  //  build mask output for current radix combination
+  //  scan mask ouput
+  //  store needed value from current prefix sum array to merged prefix sum array
+  //  store total sum of mask output (obtained from scan) to global block sum array
+  // calculate local sorted address from local prefix sum and scanned mask output's total sums
+  // shuffle input block according to calculated local sorted addresses
+  // shuffle local prefix sums according to calculated local sorted addresses
+  // copy locally sorted array back to global memory
+  // copy local prefix sum array back to global memory
+
+  // Copy block's portion of global input data to shared memory
+  if (DTid < _len)
+  {
+    s_data[Gidx] = cb_in[DTid];
+    s_index[Gidx] = cb_indices[DTid];
+  } else
+  {
+    s_data[Gidx] = 0;
+    s_index[Gidx] = 0;
+  }
+
+  GroupMemoryBarrierWithGroupSync();
+
+  // To extract the correct 2 bits, we first shift the number
+  //  to the right until the correct 2 bits are in the 2 LSBs,
+  //  then mask on the number with 11 (3) to remove the bits
+  //  on the left
+  uint t_data = s_data[Gidx];
+  uint t_index = s_index[Gidx];
+  uint t_2bitExtract = (t_data >> _shiftWidth) & 3;
+
+  [unroll]
+  for (uint i = 0; i < 4; ++i)
+  {
+    // Zero out s_maskOut
+    s_maskOut[Gidx] = 0;
+    if (Gidx == 0)
+      s_maskOut[MAX_BLOCK_SZ] = 0;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // build bit mask output
+    bool valEqualsi = false;
+    if (DTid < _len)
+    {
+      valEqualsi = t_2bitExtract == i;
+      s_maskOut[Gidx] = valEqualsi;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // Scan mask outputs (Hillis-Steele)
+    int partner = 0;
+    uint sum = 0;
+    [unroll]
+    for (uint d = 0; d < LOG_MAX_BLOCK_SZ; d++) {
+      partner = Gidx - (1 << d);
+      if (partner >= 0)
+        sum = s_maskOut[Gidx] + s_maskOut[partner];
+      else
+        sum = s_maskOut[Gidx];
+
+      GroupMemoryBarrierWithGroupSync();
+      s_maskOut[Gidx] = sum;
+      GroupMemoryBarrierWithGroupSync();
+    }
+
+    // Shift elements to produce the same effect as exclusive scan
+    uint cpyVal = s_maskOut[Gidx];
+    GroupMemoryBarrierWithGroupSync();
+    s_maskOut[Gidx + 1] = cpyVal;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (Gidx == 0)
+    {
+      // Zero out first element to produce the same effect as exclusive scan
+      s_maskOut[0] = 0;
+      uint totalSum = s_maskOut[MAX_BLOCK_SZ];
+      s_maskOutSums[i] = totalSum;
+      cb_blockSums[i * _gridSize + Gid] = totalSum;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (valEqualsi && (DTid < _len))
+    {
+      s_mergedScanMaskOut[Gidx] = s_maskOut[Gidx];
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+  }
+
+  // Scan mask output sums
+  // Just do a naive scan since the array is really small
+  if (Gidx == 0)
+  {
+    uint run_sum = 0;
+    for (uint i = 0; i < 4; ++i)
+    {
+      s_scanMaskOutSums[i] = run_sum;
+      run_sum += s_maskOutSums[i];
+    }
+  }
+
+  uint newPos = 0;
+  uint t_prefixSum = 0;
+
+  GroupMemoryBarrierWithGroupSync();
+
+  if (DTid < _len)
+  {
+    // Calculate the new indices of the input elements for sorting
+    t_prefixSum = s_mergedScanMaskOut[Gidx];
+    newPos = t_prefixSum + s_scanMaskOutSums[t_2bitExtract];
+  }
+
+  GroupMemoryBarrierWithGroupSync();
+
+  if (DTid < _len)
+  {
+    // Shuffle the block's input elements to actually sort them
+    // Do this step for greater global memory transfer coalescing
+    //  in next step
+    s_data[newPos] = t_data;
+    s_index[newPos] = t_index;
+    s_mergedScanMaskOut[newPos] = t_prefixSum;
+  }
+
+  GroupMemoryBarrierWithGroupSync();
+
+  if (DTid < _len)
+  {
+    // Copy block - wise prefix sum results to global memory
+    // Copy block-wise sort results to global 
+    cb_prefixSums[DTid] = s_mergedScanMaskOut[Gidx];
+    cb_outSorted[DTid] = s_data[Gidx];
+    cb_outIndex[DTid] = s_index[Gidx];
+  }
+}
+
+#pragma kernel GlobalShuffle
+[numthreads(MAX_BLOCK_SZ, 1, 1)]
+void GlobalShuffle(
+  uint DTid : SV_DISPATCHTHREADID,
+  uint Gidx : SV_GROUPINDEX,
+  uint Gid : SV_GROUPID
+)
+{
+  // get d = digit
+  // get n = blockIdx
+  // get m = local prefix sum array value
+  // calculate global position = P_d[n] + m
+  // copy input element to final position in cb_out
+
+  uint idx = MAX_BLOCK_SZ * Gid + Gidx;
+
+  if (idx < _len)
+  {
+    uint t_data = cb_outSorted[idx];
+    uint t_index = cb_outIndex[idx];
+    uint t_2bitExtract = (t_data >> _shiftWidth) & 3;
+    uint t_prefixSum = cb_prefixSums[idx];
+    uint globalPos = cb_scanBlockSums[t_2bitExtract * _gridSize + Gid] + t_prefixSum;
+    GroupMemoryBarrierWithGroupSync();
+    cb_out[globalPos] = t_data;
+    cb_indices[globalPos] = t_index;
+  }
+}

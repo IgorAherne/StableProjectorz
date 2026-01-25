@@ -1,0 +1,20 @@
+// To be used to copy one mask-atlas to another.
+// Copies contents of Masks-Atlas texture to another atlas texture.
+// Both of them should have format "unsigned int with two channels", for example R8G8_Uint.
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32
+#define THREADS_Y 1
+
+Texture2D<uint2> _CopyFromTexture;
+RWTexture2D<uint2> _OutputTexture;// Must have same size as _CopyFromTexture.
+int _Output_Width;
+int _Output_Height;
+
+[numthreads(THREADS_X,THREADS_Y,1)]
+void CSMain (uint3 id : SV_DispatchThreadID){
+    if (id.x >= _Output_Width || id.y >= _Output_Height){ return; }
+    _OutputTexture[id.xy] =  _CopyFromTexture[id.xy];
+}

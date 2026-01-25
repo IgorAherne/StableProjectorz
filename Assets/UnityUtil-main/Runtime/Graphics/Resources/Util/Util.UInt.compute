@@ -1,0 +1,30 @@
+#define BLOCK_SZ 128
+
+StructuredBuffer<uint> cb_in;
+RWStructuredBuffer<uint> cb_out;
+
+uniform uint _dataSize;
+
+#pragma kernel CopyBuffer
+[numthreads(BLOCK_SZ, 1, 1)]
+void CopyBuffer(uint DTid : SV_DISPATCHTHREADID)
+{
+  if (DTid >= _dataSize) return;
+  cb_out[DTid] = cb_in[DTid];
+}
+
+#pragma kernel ZeroOut
+[numthreads(BLOCK_SZ, 1, 1)]
+void ZeroOut(uint DTid : SV_DISPATCHTHREADID)
+{
+  if (DTid >= _dataSize) return;
+  cb_out[DTid] = 0;
+}
+
+#pragma kernel SetBufferAsThreadIdx
+[numthreads(BLOCK_SZ, 1, 1)]
+void SetBufferAsThreadIdx(uint DTid : SV_DISPATCHTHREADID)
+{
+  if (DTid >= _dataSize) return;
+  cb_out[DTid] = DTid;
+}

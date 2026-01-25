@@ -1,0 +1,105 @@
+// Via https://arxiv.org/pdf/2312.09168 Pages 5 and 6, Section 3.3
+// Creates a high-dinamic-range texture which contains light intensities.
+// Avoids ghosting artifacts
+//
+// 1) Takes several images of the same surroundings, but at different exposures. (negative exposures, and 0 as highest).
+// 2) uses the highest exposure (EV0) as the base image for color/chrominance information
+// 3) For each pixel:
+//    - if not overexposed (luminance <= 0.9), keeps the original EV0 color
+//    - if it's overexposed, looks at lower exposures until it finds non-overexposed version
+//    - Preserves the color (chrominance) from EV0 but uses luminance from lower exposure
+//    - Scales the luminance back to linear HDR space using 2^(-EV)
+// The end result will be an HDR texture that captures both bright and dark details, without clipping at 1.0;
+// Consistent colors (from EV0) while luminance info comes from best exposure.
+//
+// Alpha channel stores the final luminance value (useful for effects like bloom)
+
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+
+#pragma kernel MergeHDR
+
+
+Texture2DArray<float4> _ExposureTexturesArr; //Contains slices. LAST MUST HAVE highest Exposure.
+RWTexture2D<float4> _OutputTexture;
+
+// Parameters
+uint _Width;
+uint _Height;
+uint _NumExposures;
+
+float _OverexposedThreshold;
+float _EVs[8];// No more than 8 exposures. One Exposure Value per array slice.
+
+bool _IsSRGB; // Whether each texture is in sRGB space
+
+
+static const float3 LUMINANCE_COEFFS = float3(0.2126, 0.7152, 0.0722);
+
+
+
+// Helper function
+float3 GammaToLinear(float3 color){
+    return pow(color, float3(2.2, 2.2, 2.2)); // Assuming Unity gamma is 2.2 
+}
+
+
+float GetLuminance(float3 color) {
+    return dot(color, LUMINANCE_COEFFS);
+}
+
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void MergeHDR(uint3 id : SV_DispatchThreadID){
+    uint x = id.x;
+    uint y = id.y;
+
+    if (x >= _Width || y >= _Height){
+        return;
+    }
+
+    // Get color from EV0 (highest exposure) and ensure it's linear
+    float4 ev0ColorTexel = _ExposureTexturesArr[int3(x, y, _NumExposures - 1)];
+    float3 ev0Color      = _IsSRGB ? GammaToLinear(ev0ColorTexel.rgb) : ev0ColorTexel.rgb;
+
+    // Calculate luminance in linear space
+    float luminance = dot(ev0Color, float3(0.2126, 0.7152, 0.0722));
+
+    // Convert threshold to linear space for comparison
+    float linearThreshold = GammaToLinear(_OverexposedThreshold);
+
+    float3 finalColor = ev0Color;
+    float finalLuminance = luminance;
+
+    if (luminance > linearThreshold){
+        for (uint i=0; i<_NumExposures-1; i++){
+            // Get lower exposure color and ensure it's linear
+            float4 lowerEvTexel = _ExposureTexturesArr[int3(x, y, i)];
+            float3 lowerEvColor = _IsSRGB ? GammaToLinear(lowerEvTexel.rgb) : lowerEvTexel.rgb;
+
+            float lowerEvLum = GetLuminance(lowerEvColor);
+
+            if (lowerEvLum > linearThreshold){ continue; }
+            // Apply exposure compensation in linear space
+            float exposureScale      = pow(2.0, -_EVs[i]);
+            float correctedLuminance = lowerEvLum * exposureScale;
+
+            // Preserve chrominance from EV0 while using new luminance
+            if (luminance > 0.0001){
+                float scale = correctedLuminance / luminance;
+                finalColor *= scale;
+            }
+            finalLuminance = GetLuminance(finalColor);
+            break;
+        }
+    }
+
+    // Store final color and luminance in output texture
+    _OutputTexture[x,y] = float4(finalColor, finalLuminance);
+}

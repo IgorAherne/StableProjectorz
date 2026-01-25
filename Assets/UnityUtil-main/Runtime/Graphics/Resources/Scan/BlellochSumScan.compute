@@ -1,0 +1,132 @@
+// blelloch exclusive sum scan
+
+#define M_BLOCK_SZ 64
+#define S_BLOCK_SZ 32
+#define NUM_BANKS 16
+#define LOG_NUM_BANKS 4
+
+// #define ZERO_BANK_CONFLICTS
+
+#ifdef ZERO_BANK_CONFLICTS
+  #define CONFLICT_FREE_OFFSET(n) uint(n >> NUM_BANKS + n >> (2 * LOG_NUM_BANKS))
+#else
+  #define CONFLICT_FREE_OFFSET(n) uint(n >> LOG_NUM_BANKS)
+#endif
+
+StructuredBuffer<uint> cb_in;
+RWStructuredBuffer<uint> cb_out;
+RWStructuredBuffer<uint> cb_blockSums;
+
+uniform uint _len;
+
+groupshared uint s_out[M_BLOCK_SZ + (M_BLOCK_SZ >> LOG_NUM_BANKS)];
+
+#pragma kernel PreSumScan
+[numthreads(S_BLOCK_SZ, 1, 1)]
+void PreSumScan(
+  uint DTid : SV_DISPATCHTHREADID,
+  uint Gidx : SV_GROUPINDEX,
+  uint Gid : SV_GROUPID
+)
+{
+  int ai = Gidx;
+  int bi = Gidx + S_BLOCK_SZ;
+
+  // Zero out the shared memory
+  // Helpful especially when input size is not power of two
+  s_out[Gidx] = 0;
+  s_out[Gidx + S_BLOCK_SZ] = 0;
+  s_out[Gidx + S_BLOCK_SZ + (S_BLOCK_SZ >> LOG_NUM_BANKS) + 1] = 0;
+
+  GroupMemoryBarrierWithGroupSync();
+
+  // Copy cb_in to shared memory
+  // Note that cb_in's elements are scattered into shared memory in light of avoiding bank conflicts
+  uint idx = M_BLOCK_SZ * Gid + Gidx;
+  if (idx < _len)
+  {
+    s_out[ai + CONFLICT_FREE_OFFSET(ai)] = cb_in[idx];
+    if (idx + S_BLOCK_SZ < _len)
+      s_out[bi + CONFLICT_FREE_OFFSET(bi)] = cb_in[idx + S_BLOCK_SZ];
+  }
+
+  // For both upsweep and downsweep:
+  // Sequential indices with conflict free padding
+  //  Amount of padding = target index / num banks
+  //  This "shifts" the target indices by one every multiple of the num banks
+  // offset controls the stride and starting index of target elems at every iteration
+  // d just controls which threads are active
+  // Sweeps are pivoted on the last element of shared memory
+
+  // Upsweep/Reduce step
+  int offset = 1;
+  for (uint u=S_BLOCK_SZ; u > 0; u >>= 1)
+  {
+    GroupMemoryBarrierWithGroupSync();
+
+    if (Gidx < u)
+    {
+      int ai = offset * ((Gidx << 1) + 1) - 1;
+      int bi = offset * ((Gidx << 1) + 2) - 1;
+      ai += CONFLICT_FREE_OFFSET(ai);
+      bi += CONFLICT_FREE_OFFSET(bi);
+
+      s_out[bi] += s_out[ai];
+    }
+    offset <<= 1;
+  }
+
+  // Save the total sum on the global block sums array
+  // Then clear the last element on the shared memory
+  if (Gidx == 0) 
+  { 
+    cb_blockSums[Gid] = s_out[M_BLOCK_SZ - 1 + CONFLICT_FREE_OFFSET(M_BLOCK_SZ - 1)];
+    s_out[M_BLOCK_SZ - 1 + CONFLICT_FREE_OFFSET(M_BLOCK_SZ - 1)] = 0;
+  }
+
+  // Downsweep step
+  for (uint d=1; d < M_BLOCK_SZ; d <<= 1)
+  {
+    offset >>= 1;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (Gidx < d)
+    {
+      int ai = offset * ((Gidx << 1) + 1) - 1;
+      int bi = offset * ((Gidx << 1) + 2) - 1;
+      ai += CONFLICT_FREE_OFFSET(ai);
+      bi += CONFLICT_FREE_OFFSET(bi);
+
+      uint temp = s_out[ai];
+      s_out[ai] = s_out[bi];
+      s_out[bi] += temp;
+    }
+  }
+  GroupMemoryBarrierWithGroupSync();
+
+  // Copy contents of shared memory to global memory
+  if (idx < _len)
+  {
+    cb_out[idx] = s_out[ai + CONFLICT_FREE_OFFSET(ai)];
+    if (idx + S_BLOCK_SZ < _len)
+      cb_out[idx + S_BLOCK_SZ] = s_out[bi + CONFLICT_FREE_OFFSET(bi)];
+  }
+}
+
+#pragma kernel AddBlockSums
+[numthreads(S_BLOCK_SZ, 1, 1)]
+void AddBlockSums(
+  uint Gidx : SV_GROUPINDEX,
+  uint Gid : SV_GROUPID
+)
+{
+  uint d_block_sum_val = cb_blockSums[Gid];
+
+  uint idx = 2 * Gid * S_BLOCK_SZ + Gidx;
+  if (idx < _len)
+  {
+    cb_out[idx] = cb_in[idx] + d_block_sum_val;
+    if (idx + S_BLOCK_SZ < _len)
+      cb_out[idx + S_BLOCK_SZ] = cb_in[idx + S_BLOCK_SZ] + d_block_sum_val;
+  }
+}

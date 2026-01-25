@@ -1,0 +1,106 @@
+
+#pragma kernel ApplySphere
+#pragma kernel Combine_Depth_and_GuessedDepth
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+
+Texture2D<float> DepthSrcTex;
+Texture2D<float> SphereTex;
+
+RWTexture2D<float> Depth_OutputTex;
+RWTexture2D<float> SphereMask_OutputTex;
+
+int Output_Width;
+int Output_Height;
+
+int Sphere_Width;
+int Sphere_Height;
+float4 SphereCoordAndScale; // xy is offset (0-1), zw is scale
+
+//given a depth heightmap, places a texture of a sphere onto it.
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ApplySphere(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)Output_Width || id.y >= (uint)Output_Height)
+        return;
+
+    float currentDepth = DepthSrcTex[id.xy];
+    
+    float2 centerPos = float2(SphereCoordAndScale.x * Output_Width,
+                             SphereCoordAndScale.y * Output_Height);
+    
+    float2 relativePos = float2(id.x - centerPos.x, id.y - centerPos.y);
+    
+    // Normalize the scale factors by removing the texture dimension multiplication
+    float2 scaleFactor = float2(
+        Output_Height * SphereCoordAndScale.z,//NOTICE: use Height of OUTPUT
+        Output_Height * SphereCoordAndScale.w //NOTICE use Height again, if output aspect is non-square.
+    );                                        //(but sphere mask is always square)
+    
+    float2 sphereUV = (relativePos / scaleFactor) + 0.5;
+    
+    float sphereVal = 0;
+    float outputDepth = currentDepth;
+    
+    if (sphereUV.x >= 0 && sphereUV.x <= 1 && 
+        sphereUV.y >= 0 && sphereUV.y <= 1)
+    {
+        int2 sphereTexCoord = int2(
+            sphereUV.x * (Sphere_Width - 1),
+            sphereUV.y * (Sphere_Height - 1)
+        );
+        sphereVal = SphereTex[sphereTexCoord];
+        
+        outputDepth = max(currentDepth, sphereVal);
+    }
+    
+    Depth_OutputTex[id.xy] = outputDepth;
+    SphereMask_OutputTex[id.xy] = sphereVal;
+}
+
+
+
+Texture2D<float> DepthTex;//that was rendered by StableProjectorz
+Texture2D<float> GuessedDepthTex;//from zoedepth estimate, etc
+
+RWTexture2D<float> CombinedDepth_rsltTex;
+
+float4 DepthTex_Size;
+float4 GuessedDepthTex_Size;
+float4 CombinedDepth_rsltTexSize;
+
+// Given an estimated depth heightmap (via zoedepth, etc),
+// places a depth heightmap on top of it (rendered by StableProjectorz).
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void Combine_Depth_and_GuessedDepth(uint3 id : SV_DispatchThreadID)
+{
+    // Early exit if outside the output bounds
+    if (id.x >= (uint) CombinedDepth_rsltTexSize.x || id.y >= (uint) CombinedDepth_rsltTexSize.y)
+        return;
+        
+    // Calculate normalized UV coordinates (0-1 range)
+    float2 uv = float2(id.x / (CombinedDepth_rsltTexSize.x),
+                       id.y / (CombinedDepth_rsltTexSize.y));
+    
+    uint2 depthCoord = uint2(
+        uv.x * DepthTex_Size.x + 0.5, //integers; add 0.5 for proper rounding
+        uv.y * DepthTex_Size.y + 0.5
+    );
+    
+    // Convert UV to GuessedDepth texture coordinates
+    uint2 guessedCoord = uint2(
+        uv.x * GuessedDepthTex_Size.x + 0.5,
+        uv.y * GuessedDepthTex_Size.y + 0.5
+    );
+    
+    // Sample using the scaled coordinates, if they are of different sizes 
+    // (happens if generated via Envelope mode, etc)
+    float preciseDepth = DepthTex[depthCoord];
+    float guessedDepth = GuessedDepthTex[guessedCoord]; 
+    
+    // Use the precise 'depth' if it's non-zero. Else the guessed estimated-depth (from zoedepth).
+    CombinedDepth_rsltTex[id.xy] = preciseDepth>0.001 ? preciseDepth : guessedDepth;
+}

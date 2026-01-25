@@ -1,0 +1,46 @@
+// Applies '_FillValue' into the masks of specific atlas sector.
+//
+// Keep in mind, each mask is expressed in 8-bits. 
+// This allows atlas texture to contain sixteen masks in each texel. (There are 4 channels and every channel is 32 bits)
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+#define MASKS_PER_TEXEL 16
+
+#include "Assets/_gm/_Core/Shader_Includes/BrushMasks_BitwiseTools.cginc"
+
+// Declare the RWTexture with uint4 since we're working with integers
+RWTexture2D<uint4> _FillMeAtlas;
+
+float _FillValue; //for pasting into the required Overlay masks
+
+// where the masks we're interested in begin, in a sampled texel. 
+// Remember that each texel contains 16 masks packed inside it.
+int _Ix_inSampledTexel;
+int _NumFocusedMasks; //if we are rendering 6 Points-of-View (POVs), this should be 6 (six masks focused).
+
+int _Sector_Texel_OffsetX;
+int _Sector_Texel_OffsetY;
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain( uint3 id : SV_DispatchThreadID ){
+    //focus on the requested sector of the atlas
+    id.x += _Sector_Texel_OffsetX;
+    id.y += _Sector_Texel_OffsetY;
+
+    uint4 add_rgba128  = _FillMeAtlas[id.xy];//notice, uint4 not float4!
+    float masks[MASKS_PER_TEXEL]; //masks from aditive atlas
+    get_16_masks(add_rgba128, masks);
+
+    for(int maskIx=0;  maskIx<_NumFocusedMasks;  ++maskIx){
+        int ix_in_texel    = _Ix_inSampledTexel + maskIx;
+        masks[ix_in_texel] = _FillValue;
+    } 
+    //now, packs the masks back into the texel.
+    uint4 masksPacked = pack_16_masks(masks);//NOTICE: uint4 not float4!
+    _FillMeAtlas[id.xy] = masksPacked;
+}

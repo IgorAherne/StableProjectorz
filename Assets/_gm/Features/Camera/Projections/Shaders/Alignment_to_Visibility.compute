@@ -1,0 +1,171 @@
+//alters the R channel of the visibility texture.
+//  R: fade-adjusted visibility, 
+//  G: raw visibility. Sorted, x is greatest, w lowest (if used).
+//
+// Adjusts it based on the Dots and Ixs textures.
+// Dots contain dot products between normal and view. Towards (up to) 4 most-pointing to camera POVs.
+// Ixs tells us which of the Pov it is. There can be up to 6 povs, so 0,1,2,3,4,5.
+// 
+// This adjustment ensures all the R channel (fade-adjusted visibilities in each texture) 
+// add-up to no more than 1.
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+
+#pragma multi_compile _ NUM_POV_2  NUM_POV_3  NUM_POV_4  NUM_POV_5  NUM_POV_6
+
+#include "Assets/_gm/_Core/Shader_Includes/MultiProjection_AutoDefines.cginc"
+
+
+//each channel for a pov (up to four povs). They are sorted
+Texture2DArray<float4> _PovDots;
+
+//each channel for a pov (up to four povs).
+// Indexes have to be packed into [0,1]  range.
+// If there are 5 cameras total, then  0 is Unknown,  0.2 is first,  0.4 is second, 0.6 is third, etc:
+// (they are sorted, so might be like 0.6, 0.2, 0.4 etc)
+Texture2DArray<float4> _PovIxs; 
+
+
+// for example 0.7; This would mean best pov gets 100% strength everywhere in 0.7 range.
+// Any fading would only start for dot products less than 0.7
+float _BestPov_DotMinRange;
+// Increases priority for "better" povs, if we are in the blending rage 
+// (dot that are < 0.7 in the above example)
+float _DotFadePow;
+
+
+    RWTexture2DArray<float2> _POV0_ProjVisibility;
+
+#ifdef NUM_POV_2
+    RWTexture2DArray<float2> _POV1_ProjVisibility;
+#endif
+#ifdef NUM_POV_3
+    RWTexture2DArray<float2> _POV2_ProjVisibility;
+#endif
+#ifdef NUM_POV_4 
+    RWTexture2DArray<float2> _POV3_ProjVisibility;
+#endif
+#ifdef NUM_POV_5
+    RWTexture2DArray<float2> _POV4_ProjVisibility;
+#endif
+#ifdef NUM_POV_6
+    RWTexture2DArray<float2> _POV5_ProjVisibility;
+#endif
+
+
+
+// fill the array, by sampling corresponding visibility textures.
+void get_visibils_array(int3 id : SV_DispatchThreadID, inout float2 visibils[6]){
+    
+    for(int i=0; i<6; ++i){ visibils[i]=0; }
+    visibils[0] = _POV0_ProjVisibility[id.xyz];
+
+    #ifdef NUM_POV_2
+     visibils[1] = _POV1_ProjVisibility[id.xyz];
+    #endif
+    #ifdef NUM_POV_3
+     visibils[2] = _POV2_ProjVisibility[id.xyz];
+    #endif
+    #ifdef NUM_POV_4
+     visibils[3] = _POV3_ProjVisibility[id.xyz];
+    #endif
+    #ifdef NUM_POV_5
+     visibils[4] = _POV4_ProjVisibility[id.xyz];
+    #endif
+    #ifdef NUM_POV_6
+     visibils[5] = _POV5_ProjVisibility[id.xyz];
+    #endif
+} 
+
+
+//dump the contents of array to corresponding textures
+void save_visibils_array(int3 id : SV_DispatchThreadID,  inout float2 visibils[6]){
+     _POV0_ProjVisibility[id.xyz] = visibils[0];
+    #ifdef NUM_POV_2
+     _POV1_ProjVisibility[id.xyz] = visibils[1];
+    #endif
+    #ifdef NUM_POV_3
+     _POV2_ProjVisibility[id.xyz] = visibils[2];
+    #endif
+    #ifdef NUM_POV_4
+     _POV3_ProjVisibility[id.xyz] = visibils[3];
+    #endif
+    #ifdef NUM_POV_5
+     _POV4_ProjVisibility[id.xyz] = visibils[4];
+    #endif
+    #ifdef NUM_POV_6
+     _POV5_ProjVisibility[id.xyz] = visibils[5];
+    #endif
+}
+
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID){
+
+    float4 dots = _PovDots[id.xyz]; //Sorted, x is best, w worst (if used).
+    float4 idsSample  = _PovIxs[id.xyz];//Sorted by their dots, x is best, w worst (if used).
+
+    int ixs[4];   //-0.51 so that it truncates downwards:
+    ixs[0] =  idsSample.r==0?  -1  : int( idsSample.r*_NumPOV - 0.51);
+    ixs[1] =  idsSample.g==0?  -1  : int( idsSample.g*_NumPOV - 0.51);
+    ixs[2] =  idsSample.b==0?  -1  : int( idsSample.b*_NumPOV - 0.51);
+    ixs[3] =  idsSample.a==0?  -1  : int( idsSample.a*_NumPOV - 0.51);
+
+    float2 visibils[6];
+    get_visibils_array( id, visibils );//R: fade-adjusted visibility, G: raw visibility.  
+
+    // we have to do it in 3 goes, re-normalizing after each one. 
+    // Because had we done it once, we would squash all into zero and hit numerical precision.
+    // The outcome would then be black.  So, doing it in few steps, with small power (3.5).
+    // Don't do large power, else we start getting black lines on the rim.
+    float p = lerp(1.5, 3.5, _DotFadePow);
+    dots = pow(abs(dots), p);
+    dots /= max(0.000002, dot(dots, 1.0));
+
+    dots = pow(dots, p);
+    dots /= max(0.000002, dot(dots, 1.0));
+
+    dots = pow(dots, p);
+    dots /= max(0.000002, dot(dots, 1.0));
+
+    dots = pow(dots, p);
+    dots /= max(0.000002, dot(dots, 1.0));
+
+    dots = pow(dots, p);
+    dots /= max(0.000002, dot(dots, 1.0));
+
+    dots = saturate(dots);
+    
+      int ix0 = ixs[0];
+      if(ix0>=0){
+        visibils[ix0] =  visibils[ix0].rg * float2(dots.x,1);
+      }
+       
+    #ifdef NUM_POV_2
+      int ix1 = ixs[1];
+      if(ix1>=0){
+        visibils[ix1] =  visibils[ix1].rg * float2(dots.y,1);
+      }
+    #endif
+    #ifdef NUM_POV_3
+      int ix2 = ixs[2];
+      if(ix2>=0){
+          visibils[ix2] =  visibils[ix2].rg * float2(dots.z,1);
+      }
+    #endif
+    #ifdef NUM_POV_4
+      int ix3 = ixs[3];
+      if(ix3>=0){
+          visibils[ix3] =  visibils[ix3].rg * float2(dots.w,1);
+      }
+    #endif
+    //other povs aren't used, we only consider 4 most aligned ones.
+
+    save_visibils_array(id, visibils);
+}

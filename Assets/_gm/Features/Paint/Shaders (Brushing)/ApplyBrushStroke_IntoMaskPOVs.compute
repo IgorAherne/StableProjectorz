@@ -1,0 +1,174 @@
+//Applies incoming difference (current-previous) into the _PaintedMask
+//And maybe shrinks other masks, such that total sum is no more than 1.
+
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+#define THREADS_Z 1
+
+
+#pragma multi_compile _ NUM_POV_2  NUM_POV_3  NUM_POV_4  NUM_POV_5  NUM_POV_6
+
+#include "UnityCG.cginc"
+#include "Assets/_gm/_Core/Shader_Includes/MultiProjectionVariables.cginc"
+
+Texture2DArray<float> _PrevBrushStroke_R8;
+Texture2DArray<float> _CurrBrushStroke_R8;
+float _Sign; //-1 for erase, 1 for add.
+
+RWTexture2DArray<float> _PaintedMask;//packed into [0,1] range
+Texture2DArray<float2> _PaintedMask_Visibil;
+
+#ifdef NUM_POV_2
+  RWTexture2DArray<float> _NonPaintedMaskA;//packed into [0,1] range
+  Texture2DArray<float2> _NonPaintedMask_VisibilA;
+#endif
+
+#ifdef NUM_POV_3
+  RWTexture2DArray<float> _NonPaintedMaskB;
+  Texture2DArray<float2> _NonPaintedMask_VisibilB;
+#endif
+#ifdef NUM_POV_4
+  RWTexture2DArray<float> _NonPaintedMaskC;
+  Texture2DArray<float2> _NonPaintedMask_VisibilC;
+#endif
+#ifdef NUM_POV_5
+  RWTexture2DArray<float> _NonPaintedMaskD;
+  Texture2DArray<float2> _NonPaintedMask_VisibilD;
+#endif
+#ifdef NUM_POV_6
+  RWTexture2DArray<float> _NonPaintedMaskE; 
+  Texture2DArray<float2> _NonPaintedMask_VisibilE;
+#endif
+
+
+struct Computes{
+    float invisibility; //[0,1]  one minus visibility
+    float apparentVisibil; //[0,1]
+    float brushMask_02; //[0,2]. Anything above 1 is for fighting the invisibility.
+};
+
+
+//remember than mask is packed into [0,0.5] as 0% to 100%.
+ //Anything from [0.5, 1] is for "overcoming" any invisiblity.
+ // So, doing the expanded mask (for example 130%) MINUS invisibility (like 70%).
+void apparent_visibility_01( uint3 id : SV_DispatchThreadID,  
+                             RWTexture2DArray<float> maskTex,  Texture2DArray<float2> visibilityTex,
+                             inout Computes c ){
+        float2 visibility = visibilityTex[id.xyz].rg;
+    float visibilityFaded = visibility.r;
+    float visibilityReal  = visibility.g;
+    
+          c.invisibility =  1.0-visibilityFaded;
+          c.brushMask_02 =  maskTex[id.xyz] * 2; //[0,1] --> [0,2]. Anything above 1 is for fighting the invisibility.
+       c.apparentVisibil =  saturate(c.brushMask_02 - c.invisibility);
+}
+
+
+float total_ApparentVisibil_others(uint3 id : SV_DispatchThreadID,  inout Computes computes[5] ){
+      float total =  0;
+    
+    #ifdef NUM_POV_2
+      apparent_visibility_01(id, _NonPaintedMaskA, _NonPaintedMask_VisibilA,  computes[0]);//populates 0th entry in array.
+      total += computes[0].apparentVisibil;
+    #endif  
+    #ifdef NUM_POV_3
+      apparent_visibility_01(id, _NonPaintedMaskB, _NonPaintedMask_VisibilB,  computes[1]);
+      total += computes[1].apparentVisibil;
+    #endif
+    #ifdef NUM_POV_4 
+      apparent_visibility_01(id, _NonPaintedMaskC, _NonPaintedMask_VisibilC,  computes[2]);
+      total += computes[2].apparentVisibil;
+    #endif
+    #ifdef NUM_POV_5
+      apparent_visibility_01(id, _NonPaintedMaskD, _NonPaintedMask_VisibilD,  computes[3]);
+      total += computes[3].apparentVisibil;
+    #endif
+    #ifdef NUM_POV_6
+      apparent_visibility_01(id, _NonPaintedMaskE, _NonPaintedMask_VisibilE,  computes[4]);
+      total += computes[4].apparentVisibil;
+    #endif 
+    return total;
+}
+
+
+ 
+void shrink_and_store( uint3 id : SV_DispatchThreadID,  float visibil_maxAllowed,
+                       float total_apparentVisibility,  inout Computes c,  
+                       RWTexture2DArray<float> maskTex ){
+    //shrink self:
+    float proportion =  c.apparentVisibil / (total_apparentVisibility+0.00001);
+    float vis =  visibil_maxAllowed * proportion;
+
+    float distributed = min(c.brushMask_02, c.invisibility)  + vis;
+    maskTex[id.xyz]   = distributed*0.5f; //[0,2] --> [0,1]
+}
+
+ 
+
+void shrink_apparentVisibil( uint3 id : SV_DispatchThreadID, float visibil_maxAllowed,
+                             float total_apparentVisibility,  in Computes computes[5] ){
+    #ifdef NUM_POV_2
+      shrink_and_store(id, visibil_maxAllowed, total_apparentVisibility, computes[0], _NonPaintedMaskA );
+    #endif                                                 
+    #ifdef NUM_POV_3                                       
+      shrink_and_store(id, visibil_maxAllowed, total_apparentVisibility, computes[1], _NonPaintedMaskB );
+    #endif                                                 
+    #ifdef NUM_POV_4                                       
+      shrink_and_store(id, visibil_maxAllowed, total_apparentVisibility, computes[2], _NonPaintedMaskC );
+    #endif                                                 
+    #ifdef NUM_POV_5                                       
+      shrink_and_store(id, visibil_maxAllowed, total_apparentVisibility, computes[3], _NonPaintedMaskD );
+    #endif                                                 
+    #ifdef NUM_POV_6                                       
+      shrink_and_store(id, visibil_maxAllowed, total_apparentVisibility, computes[4], _NonPaintedMaskE );
+    #endif
+}
+ 
+
+void storePaintedMask( uint3 id : SV_DispatchThreadID,  float diff_m1_p1,  out float othersVisibil_maxAllowed ){
+    float2 paintedVisibil = _PaintedMask_Visibil[id.xyz].rg;//texture that tells if texel is seen by projector camera or not.
+    float pVisibilFaded  = paintedVisibil.r;//Edges of model were darkened further. Has no knowledge if is at front or is occluded.
+    float pVisibilReal   = paintedVisibil.g;//Original visibility. 1 means visible, 0 means occluded.
+    float pInvisibility  = 1.0 - pVisibilFaded;
+    
+    //[0,2]. Anything above 1 is for fighting the invisibility.
+    //Allow mask to grow beyond 1, but only enough to overcome current invisibility.
+    float pCurrMask_02  =  _PaintedMask[id.xyz] * 2; 
+          pCurrMask_02  =  clamp( pCurrMask_02+diff_m1_p1,  0,  1+pInvisibility );
+
+    float pApparentVisibil =  saturate(pCurrMask_02 - pInvisibility);
+    othersVisibil_maxAllowed =  saturate(1.0-pApparentVisibil);
+
+    _PaintedMask[id.xyz] =  pCurrMask_02 * 0.5f;  //[0,2] --> [0,1]
+}
+
+
+
+[numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
+void CSMain (uint3 id : SV_DispatchThreadID){
+    // brush stroke as abserved in previous frame and current frame. In [-1,1] range
+    float prevPaint_m1_p1 = _PrevBrushStroke_R8[id] * _Sign;
+    float currPaint_m1_p1 = _CurrBrushStroke_R8[id] * _Sign;
+
+    if( abs(currPaint_m1_p1) <= abs(prevPaint_m1_p1) ){  return; }//already up-to-date.
+
+    float diff_m1_p1 = currPaint_m1_p1 - prevPaint_m1_p1;
+     
+    float othersVisibil_maxAllowed;
+    storePaintedMask( id,  diff_m1_p1,  othersVisibil_maxAllowed ); 
+
+    if(diff_m1_p1 <= 0){ return; }//if painted negative, other masks aren't affected, can be kept as is.
+    //else, painted positive, so other masks might have to shrink in their visibility:
+
+    //Look at their "apparent visibility" (after their "invisibility" is subtracted from these masks)
+    Computes computes[5];
+    float others_apparentVisibility  = total_ApparentVisibil_others(id, computes);
+
+    if(others_apparentVisibility < othersVisibil_maxAllowed){return;}
+
+    // shrink other masks, based on their proportion to 'others_apparentVisibility':
+    shrink_apparentVisibil(id, othersVisibil_maxAllowed, others_apparentVisibility, computes);
+}

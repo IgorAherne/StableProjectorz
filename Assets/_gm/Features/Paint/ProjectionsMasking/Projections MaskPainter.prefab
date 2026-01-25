@@ -1,0 +1,154 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &4096179056553277588
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4924899932936187526}
+  - component: {fileID: 3264168813818487064}
+  m_Layer: 5
+  m_Name: Projections MaskPainter
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!224 &4924899932936187526
+RectTransform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4096179056553277588}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_AnchorMin: {x: 0, y: 0}
+  m_AnchorMax: {x: 1, y: 1}
+  m_AnchoredPosition: {x: 0, y: 0}
+  m_SizeDelta: {x: 0, y: 0}
+  m_Pivot: {x: 0.5, y: 0.5}
+--- !u!114 &3264168813818487064
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4096179056553277588}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 185af960a16b715409fc79492bb06270, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _brushResizeDrag_speed: 14
+  _brushShader: {fileID: 4800000, guid: 274b786a15e442048926609ee1f6326b, type: 3}
+  _brushSizeScale:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0.19617648
+      outSlope: 0.19617648
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0
+      outWeight: 0.10207876
+    - serializedVersion: 3
+      time: 0.80193186
+      value: 0.34263816
+      inSlope: 0.8197521
+      outSlope: 0.8197521
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.33333334
+    - serializedVersion: 3
+      time: 1
+      value: 1.1
+      inSlope: 7.1759963
+      outSlope: 7.1759963
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.08908511
+      outWeight: 0
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  _pressureBrushSizeCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0.15923029
+      outSlope: 0
+      tangentMode: 69
+      weightedMode: 0
+      inWeight: 0
+      outWeight: 0.20205937
+    - serializedVersion: 3
+      time: 0.1
+      value: 0
+      inSlope: 0
+      outSlope: 1.1111112
+      tangentMode: 69
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.095941186
+    - serializedVersion: 3
+      time: 1
+      value: 1
+      inSlope: 1.1111112
+      outSlope: 1.2763909
+      tangentMode: 69
+      weightedMode: 0
+      inWeight: 0.08029933
+      outWeight: 0
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  _pressureOpacitySizeCurve:
+    serializedVersion: 2
+    m_Curve:
+    - serializedVersion: 3
+      time: 0
+      value: 0
+      inSlope: 0.15923029
+      outSlope: 0.15923029
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0
+      outWeight: 0.20205937
+    - serializedVersion: 3
+      time: 0.59491324
+      value: 0.17941442
+      inSlope: 0.8027545
+      outSlope: 0.8027545
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.33333334
+      outWeight: 0.122318536
+    - serializedVersion: 3
+      time: 1
+      value: 1
+      inSlope: 3.3948982
+      outSlope: 3.3948982
+      tangentMode: 0
+      weightedMode: 0
+      inWeight: 0.058071773
+      outWeight: 0
+    m_PreInfinity: 2
+    m_PostInfinity: 2
+    m_RotationOrder: 4
+  _fill_UV_chunks_shader: {fileID: 4800000, guid: 9285590938eaa7a44b6de85902362054, type: 3}
+  _brushShader_noCVTRaster: {fileID: 4800000, guid: 217af4f5c308b0e4ea2f1c95476df0f1, type: 3}
+  _applyBrushStroke_toUvMask: {fileID: 0}

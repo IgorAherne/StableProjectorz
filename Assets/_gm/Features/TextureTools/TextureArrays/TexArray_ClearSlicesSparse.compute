@@ -1,0 +1,26 @@
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+#define THREADS_Z 1
+
+RWTexture2DArray<float4> _TextureArray;
+float4 _ClearColor;
+
+StructuredBuffer<uint> _SlicesToClear;
+uint _NumSlicesToClear;
+
+
+[numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint width, height, depth;
+    _TextureArray.GetDimensions(width, height, depth);
+
+    for (uint i=0; i<_NumSlicesToClear; i++){
+        uint sliceToClear = _SlicesToClear[i];
+        uint3 coord =  uint3(id.xy, sliceToClear);
+        _TextureArray[coord] = _ClearColor;
+    }
+}

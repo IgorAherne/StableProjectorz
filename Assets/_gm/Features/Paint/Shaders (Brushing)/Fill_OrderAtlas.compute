@@ -1,0 +1,28 @@
+// Applies '_FillValue' into the masks of specific atlas sector.
+//
+// Keep in mind, each mask is expressed in 8-bits. 
+// This allows atlas texture to contain sixteen masks in each texel. (There are 4 channels and every channel is 32 bits)
+#pragma kernel CSMain
+// Size of thread group for each kernel. 32 is good for NVIDIA, 64 for AMD.
+// NOTICE: must correspond to 'ComputeShaders_MGR.computeShaders_threadsXYZ'.
+#define THREADS_X 32 
+#define THREADS_Y 1
+
+#define MASKS_PER_TEXEL 16
+
+#include "Assets/_gm/_Core/Shader_Includes/BrushMasks_BitwiseTools.cginc"
+
+// Declare the RWTexture with uint4 since we're working with integers
+RWTexture2D<uint4> _OrderMasksAtlas;
+
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void CSMain( uint3 dtid : SV_DispatchThreadID ){
+
+    uint ixs[MASKS_PER_TEXEL];
+    for(int i=0; i<MASKS_PER_TEXEL; ++i){
+        ixs[i] =  255; //first byte contains order. 255 is its special value, which signifies an inactive mask.
+    }
+    uint4 texel = pack_16_ixs(ixs);
+    _OrderMasksAtlas[dtid.xy] = texel;
+}

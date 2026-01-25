@@ -1,0 +1,19 @@
+// hillis steele inclusive float3 min scan
+
+#define BLOCK_SZ 64
+
+RWStructuredBuffer<float3> cb_in;
+StructuredBuffer<float3> cb_prev;
+
+uniform uint _len;
+uniform uint _offset;
+
+#pragma kernel HillisSteeleFloat3MinScan
+[numthreads(BLOCK_SZ, 1, 1)]
+void HillisSteeleFloat3MinScan(uint DTid : SV_DISPATCHTHREADID)
+{
+  if (DTid >= _len) return;
+
+  int sumIdx = DTid - _offset;
+  if (sumIdx >= 0) cb_in[DTid] = min(cb_prev[sumIdx], cb_in[DTid]);
+}

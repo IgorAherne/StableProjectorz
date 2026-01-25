@@ -1,0 +1,14 @@
+#define BLOCK_SZ 128
+
+StructuredBuffer<float3> cb_in;
+RWStructuredBuffer<float3> cb_out;
+
+uniform uint _dataSize;
+
+#pragma kernel CopyBufferFloat3
+[numthreads(BLOCK_SZ, 1, 1)]
+void CopyBufferFloat3(uint DTid : SV_DISPATCHTHREADID)
+{
+  if (DTid >= _dataSize) return;
+  cb_out[DTid] = cb_in[DTid];
+}

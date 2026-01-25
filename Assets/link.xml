@@ -1,0 +1,17 @@
+<!-- 
+  IMPORTANT: DO NOT DELETE THIS FILE!
+  This link.xml file is crucial for IL2CPP builds. It prevents the compiler from stripping
+  away necessary code that's required for launching external processes and file operations.
+  Deleting this file may cause runtime errors in built applications.
+-->
+<linker>
+  <assembly fullname="System">
+    <type fullname="System.Diagnostics.Process" preserve="all"/>
+    <type fullname="System.Diagnostics.ProcessStartInfo" preserve="all"/>
+  </assembly>
+  <assembly fullname="mscorlib">
+    <type fullname="System.IO.Path" preserve="all"/>
+    <type fullname="System.IO.File" preserve="all"/>
+    <type fullname="System.IO.Directory" preserve="all"/>
+  </assembly>
+</linker>

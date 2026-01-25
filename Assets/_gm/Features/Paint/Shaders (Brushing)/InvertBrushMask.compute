@@ -1,0 +1,30 @@
+#pragma kernel CSMain
+
+// Define thread group size
+#define THREADS_X 32
+#define THREADS_Y 32
+#define THREADS_Z 1
+
+RWTexture2DArray<float> _InputOutput;
+Texture2DArray<float2> _Visibility_R8G8;
+
+[numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    float currentValue = _InputOutput[id];
+    
+    float2 visibility = _Visibility_R8G8[id];
+    float visibilityFaded = visibility.r;
+    float visibilityReal  = visibility.g;
+    
+    float invisibility = (1.0 - visibilityFaded) * visibilityReal;
+    
+    //[0,0.5] is none to full mask strength.
+    //Anything above 0.5 would be for fighting the invisibility.
+    //But brush can't go above '0.5+invisibility', because of how we applied it in earlier shaders.
+    //This means that (0.5+invisibility) is max possible value.
+    float invertedValue = (0.5+invisibility) - currentValue;
+    
+    // Ensure the inverted value stays within the allowed range
+    _InputOutput[id] = saturate(invertedValue);
+}

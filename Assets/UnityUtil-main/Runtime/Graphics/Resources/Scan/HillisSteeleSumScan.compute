@@ -1,0 +1,19 @@
+// hillis steele inclusive sum scan
+
+#define BLOCK_SZ 64
+
+RWStructuredBuffer<uint> cb_in;
+RWStructuredBuffer<uint> cb_prev;
+
+uniform uint _len;
+uniform uint _offset;
+
+#pragma kernel HillisSteeleSumScan
+[numthreads(BLOCK_SZ, 1, 1)]
+void HillisSteeleSumScan(uint DTid : SV_DISPATCHTHREADID)
+{
+  if (DTid >= _len) return;
+
+  int sumIdx = DTid - _offset;
+  if (sumIdx >= 0) cb_in[DTid] += cb_prev[sumIdx];
+}

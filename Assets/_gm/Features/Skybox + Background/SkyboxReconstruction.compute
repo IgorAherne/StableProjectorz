@@ -1,0 +1,80 @@
+﻿// get a 2D panoramic image, from a squre screenshot cropped around a shiny chrome ball.
+// This image can them be used as a skybox.
+#pragma kernel CSMain
+
+RWTexture2D<float4> Result; // Output RenderTexture
+Texture2D<float4> ReflectionTexture; // Input reflection texture (the shiny ball)
+SamplerState sampler_ReflectionTexture; // Sampler state for texture sampling
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint width, height;
+    Result.GetDimensions(width, height);
+    uint x = id.x;
+    uint y = id.y;
+
+    if (x >= width || y >= height)
+        return;
+
+    // Normalize pixel coordinates to range [0, 1]
+    float u = (x + 0.5) / width;
+    float v = (y + 0.5) / height;
+
+    // Convert to longitude and latitude (in radians)
+    float longitude = (u * 2.0 - 1.0) * 3.14159265; // Range: [-π, π]
+    float latitude = (v - 0.5) * 3.14159265; // Range: [-π/2, π/2]
+
+    // Convert spherical coordinates to a direction vector
+    float cosLat = cos(latitude);
+    float sinLat = sin(latitude);
+    float cosLon = cos(longitude);
+    float sinLon = sin(longitude);
+
+    float3 dir;
+    dir.x = -sinLon * cosLat; // Negated to correct orientation
+    dir.y = sinLat;
+    dir.z = cosLon * cosLat;
+
+    dir = normalize(dir);
+
+    // We do have to allow some stretching to spread behind us, beyond the hemisphere, 
+    // because the sides of the chrome ball did reflect part of what was in front of the camera. 
+    // the angle of incidence and the distance that the camera was away from the ball.
+    // Imagine a tangent ray flying from camera towards an edge of the ball. 
+    // It would reflect almost at a straight line and keep going forwards. 
+    // So the edges would reflect stuff behind the ball actually!
+    // Compute the denominator using angular fisheye projection
+    // Original version (COMMENTED OUT BUT KEPT FOR PRECAUTION)
+    //      float denom = 1.0 + dir.z;
+    // New version:
+    float denom = sqrt(2.0 * (1.0 + dir.z));
+    if (denom < 0.0001)
+    {
+        // Direction is behind the mirror ball; return black
+        Result[int2(x, y)] = float4(0, 0, 0, 1);
+        return;
+    }
+
+    float2 uv;
+    uv.x = dir.x / denom;
+    uv.y = dir.y / denom;
+
+    // Scale and offset to [0,1] range
+    uv = uv * 0.5 + 0.5;
+
+    // Check if UV coordinates are within the mirror ball's area
+    float distSquared = (uv.x - 0.5) * (uv.x - 0.5) + (uv.y - 0.5) * (uv.y - 0.5);
+    if (distSquared > 0.25)
+    {
+        // Outside the mirror ball; return black
+        Result[int2(x, y)] = float4(0, 0, 0, 1);
+        return;
+    }
+
+    // Sample the reflection texture
+    float4 color = ReflectionTexture.SampleLevel(sampler_ReflectionTexture, uv, 0);
+
+    // Write the sampled color to the output texture
+    Result[int2(x, y)] = color;
+}
