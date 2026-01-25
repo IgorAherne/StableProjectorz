@@ -19,12 +19,12 @@ Our Discord server: [here](https://discord.gg/aWbnX2qan2)
 *   **Note:** Keep "Development Build" unchecked for performance.
 
 ## 📝 Contribution Rules
-1.  **Nested Prefabs:** Keep UI compartmentalized in Prefabs. Don't modify prefabs externally. Save your work directly inside a deepest prefab itself, to prevent merge conflicts.
+1.  **Nested Prefabs:** Keep UI separated in Prefabs. Don't modify prefabs externally. Save your work directly inside a deepest prefab itself, to prevent merge conflicts.
 2.  **Communication:** Prefer singleton-pattern, to talk between scripts. For example  `MyCoolScript.instance`; Avoid drag-and-drop references. Initialize Singletons in `Awake()`.
-3.  **Variables:** Use `[SerializeField] private` instead of `public`.
+3.  **Folders:** keep prefabs, scenes, scripts inside subfolders of `Features`. Do not use separate `Prefabs`, `Scenes`, `Scripts` folders.
 4.  **Memory:** If you spawned a `RenderTexture` make sure to release it, to aviod memory leaks.
-5.  **Naming:** `_underscoreForMemberVariables`.
-6.  **Folders:** keep prefabs, scenes, scripts inside subfolders of `Features`. Do not use separate `Prefabs`, `Scenes`, `Scripts` folders.
+5.  **Variables:** Use `[SerializeField] private` instead of `public`.
+6.  **Naming:** `_underscoreForMemberVariables`.
 
 ---
 
@@ -34,23 +34,23 @@ Our Discord server: [here](https://discord.gg/aWbnX2qan2)
 *   **Workflow:** Use **Nested Prefabs**. Avoid editing Scene files directly; edit the Prefab to keep Git diffs clean.
 
 ## 🧊 2. The 3D World
-*   **Importer:** `ModelsHandler3D_ImportHelper` uses **AssimpNet** to load OBJ/FBX/GLB at runtime.
+*   **Access:** `ModelsHandler_3D.instance` is the singleton entry point for all 3D data.
 *   **Structure:**
     *   `Objs3D_Container`: Maps every sub-mesh to a unique ID for later retrieval.
     *   `UDIMs_Helper`: Scans UVs to detect tiles (1001, 1002, etc.).
-*   **Access:** `ModelsHandler_3D.instance` is the singleton entry point for all 3D data.
+*   **Importer:** `ModelsHandler3D_ImportHelper` uses **AssimpNet** to load OBJ/FBX/GLB at runtime.
 
 ## 🎥 3. The Camera System
 Managed by `UserCameras_MGR`. Culling Planes are fixed (0.25–1000) for float precision.<br>
 *   **View Camera**: Renders high-res image for user to see. Also renders a viewport depth texture, for mesh-clicking, etc.
-*   **Depth Camera:** Renders black and white image to send to StableDiffusion (not a real viewport depth).
+*   **Depth Camera:** Renders black and white image to send to StableDiffusion (not an exact viewport depth).
 *   **Content Camera:** Renders the square resolution to send to StableDiffusion (e.g., 512x512).
 *   **Normals Camera:** Renders View-Space normals to send to StableDiffusion (Red=Right, Green=Up).
-*   **Vertex-Colors Camera:** Renders Colors encoded in mesh-vertexes to send to StableDiffusion (Red=Right, Green=Up).
+*   **Vertex-Colors Camera:** Renders Colors encoded in mesh-vertexes to send to StableDiffusion.
 *   **Multi-View Logic:** We use **Perspective Shift** (via UI Pins) to arrange multiple cameras in one viewport.
 
 ## 🎨 4. Rendering Pipeline
-*   **ProjectorCamera:** Spawns at the user's viewpoint. "Shines" the AI image onto the mesh geometry.
+*   **ProjectorCamera:** Spawns at the user's viewpoint. "Shines" the AI image inside the `_accumulation_uv_RT` texture.
 *   **Target:** `Objects_Renderer_MGR` renders into `_accumulation_uv_RT`.
 *   **Texture Arrays:** The target is a **RenderUDIMs** object (Texture Array). Each slice represents one UDIM tile.
 *   **The Loop:** Clear Black → Bake Projections (respecting depth) → Dilate (Anti-Seam) → Display on Mesh.
@@ -58,7 +58,7 @@ Managed by `UserCameras_MGR`. Culling Planes are fixed (0.25–1000) for float p
 ## 🧠 5. AI Integration
 *   **Pipeline:** `StableDiffusion_Hub` → `SD_Generate_PayloadMaker` → `SD_Generate_NetworkSender` (Talks to A1111/Forge via JSON).
 *   **Storage:** `GenData2D_Archive` stores **Information Objects**, not loose files.
-    *   **`GenData2D`**: Stores Camera POV, Prompts, Result Textures, and User Masks.
+    *   **`GenData2D`**: Remembers the Camera-params (POV), Prompts, Result Textures, and User Masks.
     *   This allows "Reloading" the exact state of a generation later.
 
 ## 🧊 6. 3D Generation
