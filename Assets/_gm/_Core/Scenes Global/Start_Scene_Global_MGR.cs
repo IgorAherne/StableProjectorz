@@ -7,9 +7,10 @@ using UnityEngine.SceneManagement;
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.SceneManagement;
+#endif
+
 namespace spz {
 
-	#endif
 
 	// Loads all necessary additive scenes at startup. The scene list is hard-coded
 	// in this script for easier version control merging.

@@ -2,11 +2,12 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using TMPro;
+
 #if UNITY_EDITOR
 using UnityEditor;
-namespace spz {
+#endif
 
-	#endif
+namespace spz {
 
 	// Knows of current version, updates the ProjectSettings each time we recompile.
 	// offers update_versionAndDate_inText() which updates the texts with the verison everywhere
