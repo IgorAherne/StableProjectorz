@@ -79,6 +79,16 @@ namespace spz {
 	    public bool is_currModel_none => _dropdowns.is_currModel_none;
 
 
+	    // Automation helper: make sure the unit takes part in a generation and
+	    // points at a depth preprocessor/model. Used by the opt-in agent bridge.
+	    public void PrepareDepthForAutomation(){
+	        if (!_collapsableSection._isExpanded){
+	            _collapsableSection.OpenOrCloseSelf(true);
+	        }
+	        _dropdowns.SelectModelAndPreprocessor_containing("depth", "depth");
+	    }
+
+
 	    // For example to also show this texture in some preview-thumbnail elsewhere.
 	    // Beware, the texture might be destroyed, so your thumb might show black.
 	    // DO NOT USE THIS FOR SD-GENERATION ARGUMENTS, instead use GetArgs_forGenerationRequest().

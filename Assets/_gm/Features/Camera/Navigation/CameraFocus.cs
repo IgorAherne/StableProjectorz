@@ -24,6 +24,20 @@ namespace spz {
 
 
 
+	    // RingProjection needs to place the camera directly, without a focus
+	    // coroutine overwriting it on the next frame.
+	    public void CancelCurrentFlight_andKeepPlacement(){
+	        if(_lerpFlyCamera_crtn != null){
+	            if(Coroutines_MGR.instance != null){ Coroutines_MGR.instance.StopCoroutine(_lerpFlyCamera_crtn); }
+	            _lerpFlyCamera_crtn = null;
+	        }
+	        _corotineCode_run_durUpdate = null;
+	        if(_tempPivot != null && transform.parent == _tempPivot){
+	            transform.SetParent(_myParent_durStart, worldPositionStays:true);
+	        }
+	    }
+
+
 	    public void Restore_CameraPlacement(CameraPovInfo povInfo, Vector3 selectedModel_pos){
         
 	        if(_lerpFlyCamera_crtn!=null){ return; }//avoids initiating it twice, because might already be reparented, etc.

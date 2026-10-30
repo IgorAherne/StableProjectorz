@@ -72,6 +72,37 @@ namespace spz {
 	            Tool_ListEvents,
 	            readOnly: true, idempotent: true);
 
+	        Add("ring_state", "Read ring-mode state",
+	            "Ring texturing state (enabled, view count, progress, status) plus the ControlNet readiness needed by a generation.",
+	            null, Tool_RingState,
+	            readOnly: true, idempotent: true);
+
+	        Add("ring_setup", "Configure ring mode",
+	            "Enable/disable ring mode, choose 2-8 views, and optionally point ControlNet unit 0 at a depth model. Used to drive a ring test without mouse clicks.",
+	            new List<AgentParamDesc>{
+	                new AgentParamDesc("enabled", "boolean", false, "Turn ring mode on or off. Omit to leave unchanged."),
+	                new AgentParamDesc("views", "number", false, "Number of ring views, 2-8. Omit to leave unchanged."),
+	                new AgentParamDesc("configure_depth", "boolean", false, "Put ControlNet unit 0 into depth mode. Default true."),
+	            },
+	            Tool_RingSetup,
+	            readOnly: false, idempotent: true);
+
+	        Add("ring_start", "Start a ring generation",
+	            "Ensure ring mode is on and run one ring generation: one full-resolution request per saved view. Returns immediately; poll ring_state for progress.",
+	            null, Tool_RingStart,
+	            readOnly: false, idempotent: false);
+
+	        Add("generate_art", "Fire the Generate button",
+	            "Runs the same path as the main Generate button. With ring mode off this is the original single-image workflow; with ring mode on it starts a ring.",
+	            null, Tool_GenerateArt,
+	            readOnly: false, idempotent: false);
+
+	        Add("ring_cancel", "Cancel a ring generation",
+	            "Ask the running ring sequence to stop and interrupt the current Stable Diffusion request.",
+	            null, Tool_RingCancel,
+	            readOnly: false, idempotent: false, destructive: true);
+
+
 	        // The only writing tool here. What it does depends entirely on the id, and
 	        // some ids delete work (clearing generations, resetting settings), so it is
 	        // flagged destructive so that a client can ask the user before firing it.
@@ -262,6 +293,98 @@ namespace spz {
 	            return;
 	        }
 	        ok(new Dictionary<string, object>{ { "invoked", id } });
+	    }
+
+
+	    static void Tool_RingState(JObject prms, Action<object> ok, Action<string> fail){
+	        ok(RingStateSnapshot());
+	    }
+
+
+	    static void Tool_RingSetup(JObject prms, Action<object> ok, Action<string> fail){
+	        var ring = RingProjection_MGR.instance;
+	        if (ring == null){ fail("RingProjection_MGR is not ready yet (scenes still loading)."); return; }
+
+	        bool? enabled = prms?.Value<bool?>("enabled");
+	        if (enabled.HasValue){ ring.SetEnabled(enabled.Value); }
+
+	        int? views = prms?.Value<int?>("views");
+	        if (views.HasValue){ ring.SetNumViews(views.Value); }
+
+	        bool configureDepth = prms?.Value<bool?>("configure_depth") ?? true;
+	        if (configureDepth){
+	            var ctrl = SD_ControlNetsList_UI.instance;
+	            if (ctrl != null){
+	                ctrl.DoForEvery_CtrlUnit((unit, ix) => {
+	                    if (ix == 0){ unit.PrepareDepthForAutomation(); }
+	                });
+	            }
+	        }
+	        ok(RingStateSnapshot());
+	    }
+
+
+	    static void Tool_RingStart(JObject prms, Action<object> ok, Action<string> fail){
+	        var ring = RingProjection_MGR.instance;
+	        var hub = StableDiffusion_Hub.instance;
+	        if (ring == null){ fail("RingProjection_MGR is not ready yet (scenes still loading)."); return; }
+	        if (hub == null){ fail("StableDiffusion_Hub is not ready yet (scenes still loading)."); return; }
+
+	        if (!ring.isEnabled){ ring.SetEnabled(true); }
+	        bool consumed = ring.TryStartGeneration(isMakingBackgrounds: false);
+	        ok(new Dictionary<string, object>{
+	            { "consumed_by_ring", consumed },
+	            { "state", RingStateSnapshot() },
+	        });
+	    }
+
+
+	    static void Tool_GenerateArt(JObject prms, Action<object> ok, Action<string> fail){
+	        var hub = StableDiffusion_Hub.instance;
+	        if (hub == null){ fail("StableDiffusion_Hub is not ready yet (scenes still loading)."); return; }
+	        hub.RequestGenerateArt();
+	        ok(RingStateSnapshot());
+	    }
+
+
+	    static void Tool_RingCancel(JObject prms, Action<object> ok, Action<string> fail){
+	        var ring = RingProjection_MGR.instance;
+	        if (ring == null){ fail("RingProjection_MGR is not ready yet (scenes still loading)."); return; }
+	        ring.Cancel();
+	        ok(RingStateSnapshot());
+	    }
+
+
+	    static Dictionary<string, object> RingStateSnapshot(){
+	        var state = new Dictionary<string, object>();
+	        var ring = RingProjection_MGR.instance;
+	        state["ring_present"] = ring != null;
+	        if (ring != null){
+	            state["ring_enabled"] = ring.isEnabled;
+	            state["views"] = ring.numViews;
+	            state["running"] = ring.isRunning;
+	            state["current_view"] = ring.currentViewIx;
+	            state["total_views"] = ring.totalViews;
+	            state["status"] = ring.statusText;
+	        }
+
+	        var ctrl = SD_ControlNetsList_UI.instance;
+	        state["controlnet_present"] = ctrl != null;
+	        if (ctrl != null){
+	            state["controlnet_units"] = ctrl.numTotalUnitsExisting();
+	            state["controlnet_active_units"] = ctrl.numActiveUnits();
+	            state["has_any_controlnet_model"] = ControlNetUnit_UI.hasAtLeastSomeModel;
+	            state["has_depth_unit"] = ctrl.Has_Depth_CTRLUnit(onlyActive: false, only_if_validModel: false);
+	            state["has_depth_model"] = ctrl.Has_Depth_CTRLUnit(onlyActive: false, only_if_validModel: true);
+	            state["has_active_depth_model"] = ctrl.Has_Depth_CTRLUnit(onlyActive: true, only_if_validModel: true);
+	            state["depth_models"] = ctrl.curentModels_of_DepthOrNormal_units();
+	        }
+
+	        var hub = StableDiffusion_Hub.instance;
+	        state["hub_present"] = hub != null;
+	        state["is_generating"] = hub != null && hub._generating;
+	        state["sd_connected"] = Connection_MGR.is_sd_connected;
+	        return state;
 	    }
 
 

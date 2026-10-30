@@ -20,18 +20,21 @@ namespace spz {
 	        string negativePrompt = StableDiffusion_Prompts_UI.instance.negativePrompt;
 	        PostProcess_Prompt(ref positivePrompt, ref negativePrompt);
 
+	        bool forceOne = RingProjection_MGR.forceSingleImage;
+	        int seed = RingProjection_MGR.seedOverride ??
+	                   (input.seed_intField.recentVal > 0 ? input.seed_intField.recentVal : UnityEngine.Random.Range(0, int.MaxValue));
 	        payload_ = new SD_txt2img_payload{
 	            prompt = positivePrompt,
 	            negative_prompt = negativePrompt,
 	            sampler_name = samplerName,
 	            scheduler = scheduler,
-	            batch_size = Mathf.RoundToInt(input.batch_size),
-	            n_iter = Mathf.RoundToInt(input.batch_count),
+	            batch_size = forceOne ? 1 : Mathf.RoundToInt(input.batch_size),
+	            n_iter = forceOne ? 1 : Mathf.RoundToInt(input.batch_count),
 	            steps = Mathf.RoundToInt(input.sampleSteps_slider.value),
 	            cfg_scale = input.CFG_scale_slider.value,
 	            width = Mathf.RoundToInt(input.width),
 	            height = Mathf.RoundToInt(input.height),
-	            seed = input.seed_intField.recentVal > 0 ? input.seed_intField.recentVal : UnityEngine.Random.Range(0, int.MaxValue),//manual (not -1), so we can show it in our icon instead of -1.
+	            seed = seed,//manual (not -1), so we can show it in our icon instead of -1.
 
 	            //webui also wants tiling to be enabled via SD_Options, that are sent separately.
 	            //This has to be sent too though (else tiling might remain enabled at current webui version, May 2024)
@@ -84,17 +87,20 @@ namespace spz {
 	        PostProcess_Prompt(ref positivePrompt, ref negativePrompt);
 
 	        var input = SD_InputPanel_UI.instance;
+	        bool forceOne = RingProjection_MGR.forceSingleImage;
+	        int seed = RingProjection_MGR.seedOverride ??
+	                   (input.seed_intField.recentVal > 0 ? input.seed_intField.recentVal : Random.Range(0, int.MaxValue));
 
 	        payload_ = new SD_img2img_payload {
 	            prompt = positivePrompt,
 	            negative_prompt = negativePrompt,
 	            sampler_name = input.samplers.value?.name??"",
 	            scheduler = input.scheduler.value?.name??"",
-	            batch_size = Mathf.RoundToInt(input.batch_size),
-	            n_iter = Mathf.RoundToInt(input.batch_count),
+	            batch_size = forceOne ? 1 : Mathf.RoundToInt(input.batch_size),
+	            n_iter = forceOne ? 1 : Mathf.RoundToInt(input.batch_count),
 	            steps  = Mathf.RoundToInt(input.sampleSteps_slider.value),
 	            cfg_scale = input.CFG_scale_slider.value,
-	            seed   = input.seed_intField.recentVal>0?  input.seed_intField.recentVal : Random.Range(0, int.MaxValue),//manual (not -1), so we can show it in our icon instead of -1.
+	            seed   = seed,//manual (not -1), so we can show it in our icon instead of -1.
 
 	            width  = Mathf.RoundToInt(input.width),
 	            height = Mathf.RoundToInt(input.height),

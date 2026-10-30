@@ -37,6 +37,10 @@ namespace spz {
 	    public Generate_RequestingWhat _isGeneratingWhat { get; private set; } = Generate_RequestingWhat.nothing;//reset to 'nothing' once generation is done.
 	    public float _generationCooldownUntil { get; private set; } = -9999; //to prevent relaunching generation too quickly (for example after Interrupting).
 
+	    // Lets RingProjection_MGR know when a single request is completely done.
+	    // 'genData' can be null when the request failed before it was created.
+	    public static Action<Generate_RequestingWhat, GenData2D, bool> _Act_OnGenerationFinished { get; set; } = null;
+
 
 	#if UNITY_EDITOR
 	    public bool _dumTextures_toFile;
@@ -235,12 +239,14 @@ namespace spz {
 	            _isGeneratingWhat = Generate_RequestingWhat.nothing;
 	            _finalPreparations_beforeGen = false;
 	            Viewport_StatusText.instance.ShowStatusText("No Models detected in the Input panel. Enter PlayMode only after WebUI was launched", false, 10, progressVisibility:false);
+	            _Act_OnGenerationFinished?.Invoke(what, null, false);
 	            return false;//no models available. User should try clicking the refresh button next to dropdown.
 	        }
 	        if(inp.samplers?.value == null){
 	            _isGeneratingWhat = Generate_RequestingWhat.nothing;
 	            _finalPreparations_beforeGen = false;
 	            Viewport_StatusText.instance.ShowStatusText("No Samplers detected in the Input panel", false, 10, progressVisibility:false);
+	            _Act_OnGenerationFinished?.Invoke(what, null, false);
 	            return false; //no samplers available.
 	        }
 	        return true;
@@ -250,7 +256,8 @@ namespace spz {
 	    //requestCategory: txt2img, img2img, etc.
 	    void Finalize_GenerationRequest( int width, int height, int n_iter, int batch_size, string requestCategory, 
 	                                     bool noSdxlAdvice=false ){
-	        string statusMsg = $"Generating {width} x {height} images <b>({requestCategory})</b>.  Num: {n_iter}x{batch_size}";
+	        string ringPrefix = RingProjection_MGR.instance != null ? RingProjection_MGR.instance.progressPrefix : "";
+	        string statusMsg = ringPrefix + $"Generating {width} x {height} images <b>({requestCategory})</b>.  Num: {n_iter}x{batch_size}";
 	        if (!noSdxlAdvice){
 	            apppend_sdxl_ctrlnet_advice_maybe( ref statusMsg );
 	            append_sdxl_size_advice_maybe(ref statusMsg );
@@ -362,7 +369,9 @@ namespace spz {
 	        var settings = new JsonSerializerSettings { TypeNameHandling = TypeNameHandling.Auto, };
 	        SD_txt2imgResponse response = JsonConvert.DeserializeObject<SD_txt2imgResponse>(json, settings);
 
-	        _latestGenData?.Complete_PendingImages( response.images ); //using ? in case SD had exception
+	        Generate_RequestingWhat finishedWhat = _isGeneratingWhat;
+	        GenData2D finishedGen = _latestGenData;
+	        finishedGen?.Complete_PendingImages( response.images ); //using ? in case SD had exception
 	        _latestGenData = null;
 
 	        int numGenerations = PlayerPrefs.GetInt("numArtGenerated", 0);
@@ -373,6 +382,7 @@ namespace spz {
 	        Viewport_StatusText.instance.ShowStatusText(genCompleted_text, false, 4, progressVisibility:false);
 
 	        _isGeneratingWhat = Generate_RequestingWhat.nothing;
+	        _Act_OnGenerationFinished?.Invoke(finishedWhat, finishedGen, true);
 	    }
 
 
@@ -390,15 +400,18 @@ namespace spz {
 	                        " ..Maybe you are mixing SDXL model with SD 1.5 Controlnet?"
 	                        : "";
 	            Viewport_StatusText.instance.ShowStatusText("Error: " + json, false, 15, progressVisibility:false);
-	            _latestGenData?.Complete_PendingImages( null ); //using ? in case SD had exception
+
+	            Generate_RequestingWhat failedWhat = _isGeneratingWhat;
+	            GenData2D failedGen = _latestGenData;
+	            failedGen?.Complete_PendingImages( null ); //using ? in case SD had exception
+	            _latestGenData = null;
 	            _isGeneratingWhat = Generate_RequestingWhat.nothing;
+	            _Act_OnGenerationFinished?.Invoke(failedWhat, failedGen, false);
 	            return true; 
 	        }
         
 	        if(json == "{}"){
 	            OnFinishTheInterrupt();
-	            _latestGenData?.Complete_PendingImages(null); //using ? in case SD had exception
-	            _isGeneratingWhat = Generate_RequestingWhat.nothing;
 	            return true;
 	        }
 	        return false; //no errors, all as expected
@@ -430,11 +443,14 @@ namespace spz {
 	            StopCoroutine(_finishTheInterrupt_ifStuck_crtn); 
 	            _finishTheInterrupt_ifStuck_crtn=null; 
 	        }
-	        GenData2D_Archive.instance.OnTerminatedGeneration(_latestGenData);
+	        Generate_RequestingWhat interruptedWhat = _isGeneratingWhat;
+	        GenData2D interruptedGen = _latestGenData;
+	        GenData2D_Archive.instance.OnTerminatedGeneration(interruptedGen);
 	        _latestGenData = null;
 	        _isGeneratingWhat = Generate_RequestingWhat.nothing;
 	        _generationCooldownUntil = Time.unscaledTime + _generationCooldown;
 	        Viewport_StatusText.instance.ShowStatusText("Interrupted the generation.", false, 3, progressVisibility: false);
+	        _Act_OnGenerationFinished?.Invoke(interruptedWhat, interruptedGen, false);
 	    }
 
 	}

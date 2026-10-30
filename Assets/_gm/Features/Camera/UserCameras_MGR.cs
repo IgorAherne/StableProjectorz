@@ -33,7 +33,9 @@ namespace spz {
 	    public View_UserCamera _curr_viewCamera { get; private set; }
 	    public int ix_currentViewCam => _viewCameras.IndexOf(_curr_viewCamera);
 	    public int numActiveViewCameras() => _viewCameras.Count(c=>c.gameObject.activeSelf);
+	    public int numViewCameras => _viewCameras.Count;
 	    public int ix_specificViewCam(View_UserCamera cam) => _viewCameras.IndexOf(cam);
+	    public bool isViewCameraActive(int ix) => ix>=0 && ix<_viewCameras.Count && _viewCameras[ix].gameObject.activeSelf;
 
 	    public static Action<int,bool> _Act_OnTogledViewCamera { get; set; } = null;//ix, isOn.
 	    public static Action<int> _Act_OnViewCamera_BecameCurrent { get; set; }

@@ -52,6 +52,35 @@ namespace spz {
 	        return chosen.ToLower().Contains("none") ? "None" : chosen;//because sometimes None or none conflict or don't get recognized.
 	    }
 
+
+	    // Used by the local agent bridge (and automated tests) to put a unit into
+	    // the depth state the ring workflow needs without simulating mouse clicks.
+	    // Keeps the normal UI path untouched: the dropdowns still raise their own
+	    // onValueChanged callbacks, exactly as if the user picked the entries.
+	    public void SelectModelAndPreprocessor_containing(string modelSubstr, string preprocessorSubstr){
+	        SelectContaining(_preprocessor_dropdown, preprocessorSubstr, "none");
+	        SelectContaining(_model_dropdown, modelSubstr, "none");
+	    }
+
+
+	    static void SelectContaining(TMP_Dropdown dropdown, string preferredSubstr, string fallbackSubstr){
+	        if (dropdown == null || dropdown.options == null || dropdown.options.Count == 0){ return; }
+	        string preferred = (preferredSubstr ?? "").ToLower();
+	        string fallback  = (fallbackSubstr ?? "").ToLower();
+
+	        int ix = -1;
+	        if (preferred.Length > 0){
+	            ix = dropdown.options.FindIndex(o => o.text != null && o.text.ToLower().Contains(preferred));
+	        }
+	        if (ix < 0 && fallback.Length > 0){
+	            ix = dropdown.options.FindIndex(o => o.text != null && o.text.ToLower().Contains(fallback));
+	        }
+	        if (ix < 0){ return; }
+
+	        if (dropdown.value != ix){ dropdown.value = ix; }   // invokes the normal callback
+	        else { dropdown.RefreshShownValue(); }
+	    }
+
 	    public bool is_currPreprocessor_none => currPreprocessorName().ToLower()=="none";
 	    public bool is_currModel_none => currModelName().ToLower()=="none";
 	    public bool isReferencePreprocessor() => currPreprocessorName().ToLower().Contains("reference");

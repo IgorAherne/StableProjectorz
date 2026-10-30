@@ -49,6 +49,19 @@ namespace spz {
 	    public int hoveredPovIx { get; private set; } = -1; //cursor might be hovering a pov-toggle, but not click it yet. Useful for previewing via checker-texture.
 	    public bool _isEditingMode{ get; private set; } = false;
 	    public bool _isShowGrid => _showGrid_toggle.isOn;
+	    public int wantedNumCams => _wantedNumCams;
+
+
+	    // RingProjection temporarily hides all cameras except the current one and
+	    // disables this component. When it restores them, make sure the slider
+	    // and the auto-sync in LateUpdate agree with the restored state.
+	    public void SyncWantedNumCameras(int num){
+	        num = Mathf.Clamp(num, 1, UserCameras_MGR.MAX_NUM_VIEW_CAMERAS);
+	        _wantedNumCams = num;
+	        _prevSliderValue = num;
+	        if(_numCameras_slider != null){ _numCameras_slider.SetSliderValue(num, invokeCallback:false); }
+	        if(_numCams_numberText != null){ _numCams_numberText.text = num.ToString(); }
+	    }
 
 	    public static Action<MultiView_StartEditMode_Args> OnStartEditMode { get; set; } = null;
 	    public static Action<MultiView_StopEdit_Args> OnStop1_EditMode { get; set; } = null;
@@ -138,6 +151,10 @@ namespace spz {
 	    void LateUpdate(){
 	        if (UserCameras_MGR.instance == null) { return; } //scenes are probably still loading.
 	        if (ModelsHandler_3D.instance == null) { return; }
+	        if (RingProjection_MGR.instance != null && RingProjection_MGR.instance.isRunning) {
+	            LateUpdate_Done();
+	            return;//RingProjection controls the camera count while it captures the N poses.
+	        }
 
 	        LateUpdate_PrntHints_maybe();
 	        LateUpdate_EnsureEditPOV_Toggles();

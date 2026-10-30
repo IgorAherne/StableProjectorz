@@ -100,7 +100,19 @@ namespace spz {
 
 
 	    void OnGenerateButton(bool isMakingBackgrounds){
-	        if( DenyWithMessage_ifCantGenerate(allow_without_controlnets:isMakingBackgrounds) ){ return; }
+	        var ring = RingProjection_MGR.instance;
+	        if (ring != null){
+	            if (ring.isRunning) { return; }//one click is already running a whole ring
+	            if (ring.TryStartGeneration(isMakingBackgrounds)) { return; }
+	        }
+	        GenerateOnce(isMakingBackgrounds);
+	    }
+
+
+	    // A single, normal generation request. RingProjection_MGR calls this once
+	    // per saved camera pose, so the old Generate path stays exactly the same.
+	    public bool GenerateOnce(bool isMakingBackgrounds){
+	        if( DenyWithMessage_ifCantGenerate(allow_without_controlnets:isMakingBackgrounds) ){ return false; }
 
 	        bool isMode_Img2Img = WorkflowRibbon_UI.instance.isMode_using_img2img();
 	        bool hasAutoMask    = WorkflowRibbon_UI.instance.has_auto_mask();
@@ -117,7 +129,13 @@ namespace spz {
 	        }else {
 	            _genRequest_helper.Generate_txt2Img(isMakingBackgrounds);
 	        }
+	        return true;
 	    }
+
+
+	    // Used by the RingProjection UI button. Goes through the same routing as
+	    // the normal Generate button (including ring mode when it is enabled).
+	    public void RequestGenerateArt() => OnGenerateButton(isMakingBackgrounds:false);
 
 
 	    public void ManuallyUpscale(float upscaleBy, Guid textureGuid_insideGen, GenData2D fromGen_canBeNull=null){
